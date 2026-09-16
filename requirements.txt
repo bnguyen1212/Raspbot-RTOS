@@ -1,0 +1,7 @@
+opencv-python
+numpy
+
+# Yahboom RASPBOT V2 motor/sensor library (I2C control of mecanum wheels, servos, etc.)
+# Install per Yahboom's setup instructions on the Pi itself; not installable from PyPI.
+# e.g. the vendor-provided `McLumk_Wheel_Sports` / RASPBOT V2 SDK module.
+# raspbot-motor-lib
