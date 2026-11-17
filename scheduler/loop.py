@@ -8,20 +8,25 @@ by main.py's loop -- nothing here should read or write module-level globals.
 
 from __future__ import annotations
 
-import time
 from collections.abc import Callable
 
+from config import TIMEOUT_SECONDS
 
-def TimerCheck(start_time: float, timeout_limit: float) -> bool:
+
+def TimerCheck(start_time: float, now: float) -> bool:
     """Safety cutoff check for the round-robin loop.
 
+    This is a pure function: it doesn't read a clock. The caller passes both
+    times, as time.monotonic() readings.
+
     Args:
-        start_time: float, the time.time() value captured when the run began.
-        timeout_limit: float, maximum number of seconds the loop is allowed to run.
+        start_time: float, the time.monotonic() reading taken once, before the
+            loop starts.
+        now: float, a fresh time.monotonic() reading for this loop pass.
 
     Returns:
-        bool: True if the elapsed time has exceeded timeout_limit (the caller
-        should stop the loop), False otherwise.
+        bool: True when now - start_time > config.TIMEOUT_SECONDS (the caller
+        must stop the loop), False otherwise.
     """
     raise NotImplementedError
 

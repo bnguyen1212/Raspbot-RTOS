@@ -2,9 +2,9 @@
 
 This is where the specific RASPBOT V2 control flow lives (as opposed to
 scheduler.loop.round_robin, which is a generic reusable primitive). Every
-task function is called directly here and all data between them (frame,
-color_counts, winning_color, p_vector) is passed as local variables/return
-values -- never through globals.
+task function is called directly here, and all data between them (frame,
+color_counts, winning_color, p_vector, the red-turn state) is passed as local
+variables/return values -- never through globals.
 """
 
 from __future__ import annotations
@@ -14,22 +14,23 @@ from collections.abc import Callable
 
 import numpy as np
 
-from config import IMAGE_HEIGHT, IMAGE_WIDTH, TIMEOUT_SECONDS, TRACKED_COLORS, Position
+from config import IMAGE_HEIGHT, IMAGE_WIDTH, TRACKED_COLORS, Position, RedState
 from scheduler.loop import TimerCheck
 from vision.color_counter import ColorCounter
 from vision.color_locator import ColorLocator
 from motion.actions import StartupAction, IdleAction, GreenAction, BlueAction, RedAction
 
-# Maps each winning color name to the action that handles it. The keys must be
-# exactly config.TRACKED_COLORS. This is checked at import, so adding or renaming
-# a color without updating this table fails right away.
+# Colors that dispatch straight to an action that takes p_vector. Red isn't in
+# this table because it runs the stateful red-turn sequence (see main()). The
+# table's keys plus "red" must be exactly config.TRACKED_COLORS. This is checked
+# at import, so adding or renaming a color without updating this table fails
+# right away.
 COLOR_ACTIONS: dict[str, Callable[[Position], None]] = {
     "green": GreenAction,
     "blue": BlueAction,
-    "red": RedAction,
 }
-assert set(COLOR_ACTIONS) == set(TRACKED_COLORS), (
-    "COLOR_ACTIONS keys must match config.TRACKED_COLORS"
+assert set(COLOR_ACTIONS) | {"red"} == set(TRACKED_COLORS), (
+    "COLOR_ACTIONS keys plus 'red' must match config.TRACKED_COLORS"
 )
 
 
@@ -51,17 +52,39 @@ def capture_frame() -> np.ndarray:
 def main() -> None:
     StartupAction()
 
-    start_time = time.time()
+    # Red-turn sequence state. It's created once, here. It only changes through
+    # RedAction's return value and the rearm rule below.
+    state: RedState = {"red_start": None, "red_rearm": True}
+
+    start_time = time.monotonic()
 
     while True:
-        if TimerCheck(start_time, TIMEOUT_SECONDS):
+        if TimerCheck(start_time, time.monotonic()):
             break
 
+        # Vision runs on every pass, even mid-turn, because the rearm rule
+        # needs the winning color.
         frame = capture_frame()
         color_counts = ColorCounter(frame)
         winning_color, p_vector = ColorLocator(color_counts, frame)
 
-        if winning_color is None:
+        # Rearm before dispatching. If a turn finishes on this pass, RedAction's
+        # red_rearm = False then wins, so red can't start another turn until a
+        # later frame shows something other than red.
+        if winning_color != "red":
+            state["red_rearm"] = True
+
+        if state["red_start"] is not None:
+            # A red turn is in progress: keep going until it finishes,
+            # whatever vision says.
+            state = RedAction(state, time.monotonic())
+        elif winning_color == "red":
+            if state["red_rearm"]:
+                state = RedAction(state, time.monotonic())  # starts a new turn
+            else:
+                # Red is still in view right after a turn. Wait until it's rearmed.
+                IdleAction()
+        elif winning_color is None:
             IdleAction()
         elif winning_color in COLOR_ACTIONS:
             COLOR_ACTIONS[winning_color](p_vector)

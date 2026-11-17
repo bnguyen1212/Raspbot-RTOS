@@ -12,6 +12,10 @@ Every function signature in the code carries the type hints shown here. Modules
 that use `X | Y` in annotations start with `from __future__ import annotations`,
 so the hints also work on Python versions older than 3.10.
 
+**All timing uses `time.monotonic()`**, never `time.time()`. The wall clock can
+jump (for example on an NTP sync on the Pi), and that would cut the run short
+or stretch it.
+
 ## config.py
 
 Every shared constant lives in `config.py` at the repo root. Modules import them
@@ -19,13 +23,14 @@ Every shared constant lives in `config.py` at the repo root. Modules import them
 nothing from the project, so it can't create a circular import. Values marked
 **TODO** are placeholders that must be tuned or calibrated on the robot.
 
-### Type aliases (defined in `config.py`)
+### Types (defined in `config.py`)
 
-| Alias | Definition | Meaning |
+| Name | Definition | Meaning |
 |---|---|---|
 | `HSV` | `tuple[int, int, int]` | `(H, S, V)` on OpenCV's scale: H 0–179, S 0–255, V 0–255 |
 | `HSVRange` | `tuple[HSV, HSV]` | `(lower, upper)`, both bounds inclusive (`cv2.inRange` semantics) |
 | `Position` | `tuple[float, float]` | `(x, y)` in pixels, origin at the top-left, `0 <= x < W`, `0 <= y < H` |
+| `RedState` | `TypedDict`: `red_start: float \| None`, `red_rearm: bool` | State of the red-turn sequence. A plain `dict` at runtime. See [Red-turn sequence](#red-turn-sequence). |
 
 ### Constants
 
@@ -39,11 +44,11 @@ nothing from the project, so it can't create a circular import. Values marked
 | `IMAGE_CENTER_X` | `int` | `320` | `IMAGE_WIDTH // 2` |
 | `IDLE_SENTINEL` | `tuple[None, None]` | `(None, None)` | What `ColorLocator` returns when idle. See [Idle value](#idle-value). |
 | `CENTER_DEADBAND_PX` | `int` | `40` | A target is "centered" when `abs(x - IMAGE_CENTER_X) <= CENTER_DEADBAND_PX`. **TODO: tune.** |
-| `TIMEOUT_SECONDS` | `float` | `20.0` | Safety cutoff for the main loop. |
+| `TIMEOUT_SECONDS` | `float` | `20.0` | Safety cutoff. `TimerCheck` compares `time.monotonic()` readings against it. |
 | `ROTATE_SPEED` | `int` | `50` | Wheel speed for rotations and spins, in motor-library units. **TODO: confirm the range and tune.** |
 | `STRAFE_SPEED` | `int` | `50` | Wheel speed for strafing, in motor-library units. **TODO: confirm the range and tune.** |
-| `SECONDS_PER_360` | `float` | `4.0` | Time for a full turn at `ROTATE_SPEED`; used by `spin_360`. Rotation is open-loop (no gyro). **TODO: calibrate.** |
-| `SECONDS_PER_180` | `float` | `2.0` | Time for a half turn at `ROTATE_SPEED`; used by `spin_180`. Calibrated separately because spin-up and spin-down make it more than half of `SECONDS_PER_360`. **TODO: calibrate.** |
+| `SECONDS_PER_360` | `float` | `4.0` | Time for a full turn at `ROTATE_SPEED`; used by `mecanum.spin_360` (startup). Rotation is open-loop (no gyro). **TODO: calibrate.** |
+| `SECONDS_PER_180` | `float` | `2.0` | Length of `RedAction`'s turn at `ROTATE_SPEED`. Calibrated separately because spin-up and spin-down make it more than half of `SECONDS_PER_360`. The turn is checked once per loop pass, so it can overshoot by up to one pass. Calibrate it by running the real loop. **TODO: calibrate.** |
 
 ### Idle value
 
@@ -64,24 +69,82 @@ if winning_color is None:   # idle
   would quietly steer the robot toward the left edge if someone forgot the idle
   check. `None` makes that mistake fail with a `TypeError` on `p_vector[0]`.
 
+## Red-turn sequence
+
+*Decided 2026-11-17. This replaces the earlier blocking `spin_180` in
+`RedAction`.*
+
+When red wins, the robot makes a timed 180° turn in place. The turn is
+**non-blocking**: it runs across several loop passes, so vision and
+`TimerCheck` keep running while the robot turns. Its progress is held in a
+`RedState` dict that `main()` owns.
+
+### State shape
+
+```python
+state: RedState = {"red_start": None, "red_rearm": True}   # created once in main()
+```
+
+| Key | Type | Meaning |
+|---|---|---|
+| `red_start` | `float \| None` | The `time.monotonic()` reading when the current turn began. `None` means no turn is running. |
+| `red_rearm` | `bool` | `True` means seeing red may start a new turn. It's set to `False` when a turn finishes, and back to `True` by the first later frame whose winning color isn't red. This stops the same red target from triggering turn after turn. |
+
+`RedAction` and the dispatch rule below are the only things that change the
+state.
+
+### Dispatch rule (`main()`, every loop pass)
+
+Steps 1 and 2 run in this order.
+
+1. **Rearm:** if `winning_color != "red"` (including idle), set
+   `state["red_rearm"] = True`.
+2. **Dispatch.** Take the first case that matches:
+
+   | # | Condition | Call |
+   |---|---|---|
+   | a | `state["red_start"] is not None` (a turn is running) | `state = RedAction(state, now)`, whatever vision returned |
+   | b | `winning_color == "red"` and `state["red_rearm"]` | `state = RedAction(state, now)`, which starts a new turn |
+   | c | `winning_color == "red"` and not rearmed | `IdleAction()` |
+   | d | `winning_color is None` (idle) | `IdleAction()` |
+   | e | `winning_color` is in `COLOR_ACTIONS` (`"green"`, `"blue"`) | `COLOR_ACTIONS[winning_color](p_vector)` |
+   | f | anything else (unrecognized color) | `IdleAction()` |
+
+- **Why rearm runs first:** if a turn finishes on a pass whose frame isn't red,
+  `RedAction`'s `red_rearm = False` overwrites the rearm. A *later* non-red frame
+  is then needed before red can trigger again.
+- **Case c** keeps the robot still while the red target it just turned away
+  from is still in view.
+- **Case f** is a defensive fallback and is **intended behavior**. A color name
+  with no action means the locator broke its contract. The robot stays still
+  and the loop keeps running instead of crashing with a `KeyError`.
+- `now` is a fresh `time.monotonic()` reading taken at the call.
+
+### Known gap: timeout during a turn
+
+If `TimerCheck` stops the loop while a turn is running, nothing calls
+`mecanum.stop()`, so the wheels keep turning after `main()` returns. This
+contract doesn't fix that yet. One option is to add a `ShutdownAction()` that
+`main()` calls after the loop.
+
 ## scheduler/loop.py
 
-### `TimerCheck(start_time: float, timeout_limit: float) -> bool`
+### `TimerCheck(start_time: float, now: float) -> bool`
 - **Inputs:**
-  - `start_time` — `time.time()` value captured once, before the loop starts.
-  - `timeout_limit` — max allowed run time, in seconds. `main.py` passes
-    `config.TIMEOUT_SECONDS`.
-- **Output:** `True` if `time.time() - start_time > timeout_limit` (the caller
-  must stop the loop), `False` otherwise.
-- **Behavior:** Holds no state of its own. It may read `time.time()` to get the
-  current time, but `main.py` owns `start_time`.
+  - `start_time` — the `time.monotonic()` reading taken once, after
+    `StartupAction()` and before the loop starts.
+  - `now` — a fresh `time.monotonic()` reading for this loop pass.
+- **Output:** `True` when `now - start_time > config.TIMEOUT_SECONDS` (the
+  caller must stop the loop), `False` otherwise.
+- **Behavior:** A pure function. It reads no clock itself and holds no state.
+  The timeout comes from `config`, not from an argument.
 
 ### `round_robin(tasks: list[Callable[[], None]]) -> None`
 - **Inputs:** `tasks` — zero-argument callables, each representing one task's
   single turn.
 - **Behavior:** Generic reusable primitive: invokes each callable once, in order.
-  `main.py`'s specific control flow doesn't need it, but it's available if a
-  module needs plain round-robin execution elsewhere.
+  `main.py`'s control flow doesn't use it. That flow passes the red-turn state
+  explicitly, which doesn't fit zero-argument tasks.
 
 ## vision/color_counter.py
 
@@ -128,14 +191,9 @@ if winning_color is None:   # idle
 
 These action functions are the *only* things `main.py` calls to make the robot
 move or idle. They call `motion.mecanum`, never the motor library directly.
-**Every action returns `None`.** The four per-loop actions (Idle, Green, Blue,
-Red) must **return promptly**, making one bounded motion per call, so the loop
-gets back to `TimerCheck`. The longest is `RedAction`, which blocks for about
-`SECONDS_PER_180`. The run can therefore end up to that long after
-`TIMEOUT_SECONDS`.
-
-`Green`, `Blue` and `Red` all take `p_vector: Position` so that they share one
-signature for `COLOR_ACTIONS`. They are never called with `None`.
+The four per-loop actions (Idle, Green, Blue, Red) **never block**. Each one
+makes at most one call to the motion layer and returns, so the loop gets back to
+`TimerCheck` promptly.
 
 For Green and Blue, let `error = p_vector[0] - config.IMAGE_CENTER_X`. A positive
 error means the target is right of center. If
@@ -144,40 +202,50 @@ does not move the robot.
 
 ### `StartupAction() -> None`
 - **Behavior:** Runs once, before the loop starts and before `start_time` is
-  captured, so it may block. Owns one-time hardware init (I2C bus, camera
+  taken, so it may block. Owns one-time hardware init (I2C bus, camera
   warm-up), then does the startup 360° spin with
   `mecanum.spin_360(config.ROTATE_SPEED)`.
 
 ### `IdleAction() -> None`
-- **Behavior:** Called when `ColorLocator` returns idle, and as `main.py`'s
-  fallback for an unrecognized color (see [Control flow](#control-flow-main)).
-  Doesn't move the robot.
+- **Behavior:** Doesn't move the robot. Called in dispatch cases c, d and f
+  (see [Dispatch rule](#dispatch-rule-main-every-loop-pass)).
 
 ### `GreenAction(p_vector: Position) -> None`
 - **Behavior:** If the target isn't centered, calls
   `mecanum.rotate_in_place("cw" if error > 0 else "ccw", config.ROTATE_SPEED)`.
+  It is never called with `None`.
 
 ### `BlueAction(p_vector: Position) -> None`
 - **Behavior:** If the target isn't centered, calls
   `mecanum.strafe("right" if error > 0 else "left", config.STRAFE_SPEED)`.
+  It is never called with `None`.
 
-### `RedAction(p_vector: Position) -> None`
-- **Behavior:** Spins 180° in place by calling
-  `mecanum.spin_180(config.ROTATE_SPEED)`. It doesn't need `p_vector`.
+### `RedAction(state: RedState, now: float) -> RedState`
+- **Inputs:** `state` — the current `RedState`. `now` — a fresh
+  `time.monotonic()` reading.
+- **Output:** the updated `RedState`. **It never modifies `state` itself.** It
+  returns a new dict, and the caller must rebind: `state = RedAction(state, now)`.
+- **Behavior:** Advances the turn by one step, with at most one motion call:
+
+  | Condition | Motion call | Returned state |
+  |---|---|---|
+  | `red_start is None` (start) | `mecanum.start_rotation("cw", config.ROTATE_SPEED)` | `red_start = now`; `red_rearm` unchanged |
+  | `now - red_start < config.SECONDS_PER_180` (turning) | none (the motors are already running) | unchanged |
+  | otherwise (finished) | `mecanum.stop()` | `red_start = None`, `red_rearm = False` |
 
 ## motion/mecanum.py
 
 Low-level kinematics. Only `motion/actions.py` should import this module, and
-only this module calls the Yahboom motor library. There is no gyro, so the
-spins are open-loop and timed with `SECONDS_PER_360` and `SECONDS_PER_180`.
-Those timings are only valid at `config.ROTATE_SPEED`.
+only this module calls the Yahboom motor library. There is no gyro, so timed
+turns are open-loop. Their timings are only valid at `config.ROTATE_SPEED`.
 
-| Function | Used by | Behavior |
-|---|---|---|
-| `rotate_in_place(direction: str, speed: int) -> None` | `GreenAction` | `direction`: `"cw"` \| `"ccw"` (clockwise as seen from above, so `"cw"` turns right). Runs one short, bounded rotation and returns, without blocking the loop. |
-| `strafe(direction: str, speed: int) -> None` | `BlueAction` | `direction`: `"left"` \| `"right"`. Runs one short, bounded strafe and returns, without blocking the loop. |
-| `spin_180(speed: int) -> None` | `RedAction` | Drives the wheels for `SECONDS_PER_180`, then stops. Blocks for that long. `speed` must be `ROTATE_SPEED`. |
-| `spin_360(speed: int) -> None` | `StartupAction` | Drives the wheels for `SECONDS_PER_360`, then stops. Blocks for that long, which is fine because it runs before the loop. `speed` must be `ROTATE_SPEED`. |
+| Function | Used by | Blocks? | Behavior |
+|---|---|---|---|
+| `rotate_in_place(direction: str, speed: int) -> None` | `GreenAction` | no | `direction`: `"cw"` \| `"ccw"` (clockwise as seen from above, so `"cw"` turns right). Runs one short, bounded rotation and returns. |
+| `strafe(direction: str, speed: int) -> None` | `BlueAction` | no | `direction`: `"left"` \| `"right"`. Runs one short, bounded strafe and returns. |
+| `start_rotation(direction: str, speed: int) -> None` | `RedAction` | no | Starts the wheels rotating in place and returns right away. They keep turning until `stop()` is called. The caller does the timing. |
+| `stop() -> None` | `RedAction` | no | Stops all four wheels. Safe to call when they're already stopped. |
+| `spin_360(speed: int) -> None` | `StartupAction` | yes | Drives the wheels for `SECONDS_PER_360`, then stops. Blocking is fine because it runs before the loop. `speed` must be `ROTATE_SPEED`. |
 
 ## main.py
 
@@ -189,30 +257,26 @@ Those timings are only valid at `config.ROTATE_SPEED`.
   plain argument and needs no hardware to test.
 
 ### `COLOR_ACTIONS: dict[str, Callable[[Position], None]]`
-The scheduler maps the winning color name to its action through this table:
+The table for colors that go straight to an action:
 
 ```python
-COLOR_ACTIONS = {"green": GreenAction, "blue": BlueAction, "red": RedAction}
+COLOR_ACTIONS = {"green": GreenAction, "blue": BlueAction}
 ```
 
-Its keys must equal `config.TRACKED_COLORS`. `main.py` asserts this at import,
-so adding a color to `COMMAND_COLORS` without adding its action fails right away.
+Red isn't in the table because it goes through the
+[Red-turn sequence](#red-turn-sequence). `main.py` asserts at import that
+`set(COLOR_ACTIONS) | {"red"} == set(TRACKED_COLORS)`.
 
 ### Control flow (`main() -> None`)
 1. `StartupAction()` — once.
-2. `start_time = time.time()`
-3. Loop:
-   1. `TimerCheck(start_time, TIMEOUT_SECONDS)`. Break if `True`.
+2. `state: RedState = {"red_start": None, "red_rearm": True}`
+3. `start_time = time.monotonic()`
+4. Loop:
+   1. `TimerCheck(start_time, time.monotonic())`. Break if `True`.
    2. `frame = capture_frame()`
    3. `color_counts = ColorCounter(frame)`
-   4. `winning_color, p_vector = ColorLocator(color_counts, frame)`
-   5. Dispatch:
-      - `winning_color is None` (idle): call `IdleAction()`.
-      - `winning_color in COLOR_ACTIONS`: call
-        `COLOR_ACTIONS[winning_color](p_vector)`.
-      - **Anything else: call `IdleAction()`.** This defensive fallback is
-        **intended behavior**. A color name with no action means the locator
-        broke its contract, and in that case the robot stays still and the loop
-        keeps running instead of crashing mid-run with a `KeyError`. The
-        import-time assert covers the table side; this branch covers the
-        locator side.
+   4. `winning_color, p_vector = ColorLocator(color_counts, frame)`. Vision runs
+      on every pass, even mid-turn, because the rearm step needs
+      `winning_color`.
+   5. Apply the [Dispatch rule](#dispatch-rule-main-every-loop-pass): rearm
+      first, then dispatch.

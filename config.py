@@ -11,12 +11,27 @@ Anything marked TODO is a placeholder that must be tuned or calibrated on the
 real robot.
 """
 
+from __future__ import annotations
+
+from typing import TypedDict
+
 # ---------------------------------------------------------------------------
-# Shared type aliases (for annotations; see docs/task_contracts.md)
+# Shared types (for annotations; see docs/task_contracts.md)
 # ---------------------------------------------------------------------------
 HSV = tuple[int, int, int]      # (H, S, V) on OpenCV's scale
 HSVRange = tuple[HSV, HSV]      # (lower, upper), both inclusive
 Position = tuple[float, float]  # (x, y) in pixels, origin top-left
+
+
+class RedState(TypedDict):
+    """State of the red-turn sequence. It's a plain dict at runtime.
+
+    main.main() creates it once, as {"red_start": None, "red_rearm": True}.
+    See "Red-turn sequence" in docs/task_contracts.md.
+    """
+
+    red_start: float | None  # time.monotonic() when the current turn began; None = no turn running
+    red_rearm: bool          # True = seeing red may start a new turn
 
 # ---------------------------------------------------------------------------
 # Vision: color thresholds
@@ -78,7 +93,8 @@ CENTER_DEADBAND_PX = 40
 # ---------------------------------------------------------------------------
 # Scheduler
 # ---------------------------------------------------------------------------
-# Safety cutoff: the main loop stops once this many seconds have elapsed.
+# Safety cutoff: TimerCheck returns True once more than this many seconds have
+# passed, measured with time.monotonic(), and the main loop then stops.
 TIMEOUT_SECONDS = 20.0
 
 # ---------------------------------------------------------------------------
@@ -93,6 +109,12 @@ STRAFE_SPEED = 50
 # seconds a rotation at ROTATE_SPEED takes. SECONDS_PER_180 is calibrated on its
 # own rather than derived as SECONDS_PER_360 / 2, because spin-up and spin-down
 # make a short turn take more than half the time of a full one.
+#
+# SECONDS_PER_360 times StartupAction's blocking spin (mecanum.spin_360).
+# SECONDS_PER_180 times RedAction's non-blocking turn. That turn is checked once
+# per loop pass, so it can overshoot by up to one pass. Calibrate it by running
+# the real loop, not by timing an isolated spin.
+#
 # TODO: placeholders -- calibrate both on the robot, at ROTATE_SPEED, on the
 # actual floor surface. Recalibrate whenever ROTATE_SPEED changes.
 SECONDS_PER_360 = 4.0
