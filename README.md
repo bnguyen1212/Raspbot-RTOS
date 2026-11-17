@@ -63,8 +63,9 @@ don't just change the signature.
   `tests/sample_images/` — no robot required.
 - Motion code (`motion/`) requires the actual robot to verify end-to-end; budget
   hardware time accordingly and coordinate access with the team.
-- Run the test suite with `pytest` from the `tests/` directory (or `pytest tests/`
-  from the repo root).
+- Install the dev dependencies first (`pip install -r requirements-dev.txt`;
+  this also installs the runtime ones), then run `pytest tests/` from the repo
+  root.
 
 ## Local Setup / Running on the Robot
 
@@ -74,9 +75,14 @@ don't just change the signature.
    cd RaspbotV2-RTOS
    ```
 2. Install dependencies:
-   ```
-   pip install -r requirements.txt
-   ```
+   - On the Pi (runtime only):
+     ```
+     pip install -r requirements.txt
+     ```
+   - On a dev machine (runtime plus pytest):
+     ```
+     pip install -r requirements-dev.txt
+     ```
    (The Yahboom motor/sensor SDK isn't on PyPI — see the note in
    `requirements.txt` and install it per Yahboom's instructions directly on the
    Pi.)

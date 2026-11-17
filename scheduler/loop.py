@@ -6,10 +6,13 @@ needs to survive between turns is passed explicitly as arguments/return values
 by main.py's loop -- nothing here should read or write module-level globals.
 """
 
+from __future__ import annotations
+
 import time
+from collections.abc import Callable
 
 
-def TimerCheck(start_time, timeout_limit):
+def TimerCheck(start_time: float, timeout_limit: float) -> bool:
     """Safety cutoff check for the round-robin loop.
 
     Args:
@@ -23,7 +26,7 @@ def TimerCheck(start_time, timeout_limit):
     raise NotImplementedError
 
 
-def round_robin(tasks):
+def round_robin(tasks: list[Callable[[], None]]) -> None:
     """Run a list of zero-argument task callables once each, in order.
 
     Generic cooperative-scheduling primitive: each task in `tasks` is invoked

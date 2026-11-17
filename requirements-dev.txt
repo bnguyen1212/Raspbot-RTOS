@@ -1,0 +1,4 @@
+# Development/testing dependencies. Not needed on the Pi just to run the robot.
+# Includes the runtime dependencies so one install sets up a dev machine.
+-r requirements.txt
+pytest

@@ -5,23 +5,23 @@ mecanum.py together are the only place the real robot is needed to test.
 
 Every function here returns None. The per-loop actions (Idle, Green, Blue and
 Red) must return promptly, making one bounded motion per call, so that main.py's
-TimerCheck still gets its turn.
+TimerCheck still gets its turn. RedAction's 180-degree spin is the longest, at
+about SECONDS_PER_180.
 """
 
-from config import CENTER_DEADBAND_PX, IMAGE_CENTER_X, ROTATE_SPEED, STRAFE_SPEED
+from __future__ import annotations
+
+from config import CENTER_DEADBAND_PX, IMAGE_CENTER_X, ROTATE_SPEED, STRAFE_SPEED, Position
 from motion import mecanum
 
 
-def StartupAction():
+def StartupAction() -> None:
     """One-time initialization run before the round-robin loop starts.
 
-    Sets up whatever the robot/motor library needs before any per-cycle
-    action can run (e.g. I2C bus init, camera warm-up, the startup spin via
-    mecanum.spin_180(ROTATE_SPEED)). It may block, because it runs before the
-    timer starts.
-
-    Args:
-        None
+    Sets up whatever the robot/motor library needs before any per-cycle action
+    can run (e.g. I2C bus init, camera warm-up), then does the startup 360-degree
+    spin via mecanum.spin_360(ROTATE_SPEED). It may block, because it runs
+    before the timer starts.
 
     Returns:
         None
@@ -29,11 +29,10 @@ def StartupAction():
     raise NotImplementedError
 
 
-def IdleAction():
+def IdleAction() -> None:
     """Action taken when no tracked color is detected in the current frame.
 
-    Args:
-        None
+    Also called by main.py as the fallback for an unrecognized color name.
 
     Returns:
         None
@@ -41,7 +40,7 @@ def IdleAction():
     raise NotImplementedError
 
 
-def GreenAction(p_vector):
+def GreenAction(p_vector: Position) -> None:
     """Respond to the green target: rotate in place toward it.
 
     Let error = p_vector[0] - IMAGE_CENTER_X. If |error| <= CENTER_DEADBAND_PX,
@@ -49,8 +48,8 @@ def GreenAction(p_vector):
     mecanum.rotate_in_place("cw" if error > 0 else "ccw", ROTATE_SPEED).
 
     Args:
-        p_vector: tuple[float, float], the (x, y) pixel position from
-            vision.color_locator.ColorLocator. Never IDLE_SENTINEL.
+        p_vector: Position, the (x, y) pixel position from
+            vision.color_locator.ColorLocator. Never None.
 
     Returns:
         None
@@ -58,7 +57,7 @@ def GreenAction(p_vector):
     raise NotImplementedError
 
 
-def BlueAction(p_vector):
+def BlueAction(p_vector: Position) -> None:
     """Respond to the blue target: strafe sideways toward it.
 
     Let error = p_vector[0] - IMAGE_CENTER_X. If |error| <= CENTER_DEADBAND_PX,
@@ -66,8 +65,8 @@ def BlueAction(p_vector):
     mecanum.strafe("right" if error > 0 else "left", STRAFE_SPEED).
 
     Args:
-        p_vector: tuple[float, float], the (x, y) pixel position from
-            vision.color_locator.ColorLocator. Never IDLE_SENTINEL.
+        p_vector: Position, the (x, y) pixel position from
+            vision.color_locator.ColorLocator. Never None.
 
     Returns:
         None
@@ -75,16 +74,16 @@ def BlueAction(p_vector):
     raise NotImplementedError
 
 
-def RedAction(p_vector):
-    """Respond to the red target: rotate in place toward it.
+def RedAction(p_vector: Position) -> None:
+    """Respond to the red target: spin 180 degrees in place.
 
-    Same rule as GreenAction. Within CENTER_DEADBAND_PX of IMAGE_CENTER_X, don't
-    move. Otherwise call
-    mecanum.rotate_in_place("cw" if error > 0 else "ccw", ROTATE_SPEED).
+    Calls mecanum.spin_180(ROTATE_SPEED), which blocks for about
+    SECONDS_PER_180. p_vector isn't needed for the spin. The parameter is kept
+    so all three color actions share one signature for main.COLOR_ACTIONS.
 
     Args:
-        p_vector: tuple[float, float], the (x, y) pixel position from
-            vision.color_locator.ColorLocator. Never IDLE_SENTINEL.
+        p_vector: Position, the (x, y) pixel position from
+            vision.color_locator.ColorLocator. Never None. Unused.
 
     Returns:
         None

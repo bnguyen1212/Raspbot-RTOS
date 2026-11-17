@@ -4,10 +4,14 @@ No hardware/camera calls belong in this module -- it must be testable against
 static images loaded from tests/sample_images/ with nothing but numpy/OpenCV.
 """
 
+from __future__ import annotations
+
+import numpy as np
+
 from config import COMMAND_COLORS, TRACKED_COLORS
 
 
-def ColorCounter(image):
+def ColorCounter(image: np.ndarray) -> dict[str, int]:
     """Count pixels of each tracked color in a camera frame.
 
     Convert the frame from BGR to HSV, build one mask for each HSV range in

@@ -12,6 +12,13 @@ real robot.
 """
 
 # ---------------------------------------------------------------------------
+# Shared type aliases (for annotations; see docs/task_contracts.md)
+# ---------------------------------------------------------------------------
+HSV = tuple[int, int, int]      # (H, S, V) on OpenCV's scale
+HSVRange = tuple[HSV, HSV]      # (lower, upper), both inclusive
+Position = tuple[float, float]  # (x, y) in pixels, origin top-left
+
+# ---------------------------------------------------------------------------
 # Vision: color thresholds
 # ---------------------------------------------------------------------------
 # OpenCV HSV scale: H 0-179, S 0-255, V 0-255.
@@ -22,7 +29,7 @@ real robot.
 # around 0/180.
 #
 # TODO: placeholder values -- tune on the robot under real lighting.
-COMMAND_COLORS = {
+COMMAND_COLORS: dict[str, tuple[HSVRange, ...]] = {
     "green": (
         ((35, 80, 50), (85, 255, 255)),
     ),
@@ -53,12 +60,16 @@ IMAGE_WIDTH = 640
 IMAGE_HEIGHT = 480
 IMAGE_CENTER_X = IMAGE_WIDTH // 2  # 320
 
-# Returned by ColorLocator when no tracked color is detected.
-# None, not (-1, -1): a (-1, -1) tuple looks like a real position, so code that
-# forgets to check for idle would quietly steer toward the left edge. With None,
-# a missed check fails loudly (TypeError on p_vector[0]).
-# Always compare with `is IDLE_SENTINEL`.
-IDLE_SENTINEL = None
+# What ColorLocator returns when no tracked color is detected. It has the same
+# (winning_color, position) shape as a detection, so callers can always unpack
+# `winning_color, p_vector = ColorLocator(...)`.
+# Check for idle with `winning_color is None` (or `== IDLE_SENTINEL`). Never use
+# `is IDLE_SENTINEL`, because two equal tuples aren't guaranteed to be the same
+# object.
+# The position is None rather than a fake value such as (-1, -1). A fake
+# position would quietly steer the robot toward the left edge if someone forgot
+# the idle check; None makes that mistake fail with a TypeError on p_vector[0].
+IDLE_SENTINEL: tuple[None, None] = (None, None)
 
 # A target counts as "centered" when |x - IMAGE_CENTER_X| <= this many pixels.
 # TODO: placeholder -- tune on the robot.
