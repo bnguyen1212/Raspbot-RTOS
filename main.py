@@ -9,12 +9,23 @@ values -- never through globals.
 
 import time
 
+from config import IDLE_SENTINEL, IMAGE_HEIGHT, IMAGE_WIDTH, TIMEOUT_SECONDS, TRACKED_COLORS
 from scheduler.loop import TimerCheck
 from vision.color_counter import ColorCounter
-from vision.color_locator import ColorLocator, IDLE_POSITION
+from vision.color_locator import ColorLocator
 from motion.actions import StartupAction, IdleAction, GreenAction, BlueAction, RedAction
 
-TIMEOUT_LIMIT_SECONDS = 120  # placeholder safety cutoff; tune per assignment spec
+# Maps each dominant color name to the action that handles it. The keys must be
+# exactly config.TRACKED_COLORS. This is checked at import, so adding or renaming
+# a color without updating this table fails right away.
+COLOR_ACTIONS = {
+    "green": GreenAction,
+    "blue": BlueAction,
+    "red": RedAction,
+}
+assert set(COLOR_ACTIONS) == set(TRACKED_COLORS), (
+    "COLOR_ACTIONS keys must match config.TRACKED_COLORS"
+)
 
 
 def capture_frame():
@@ -25,7 +36,9 @@ def capture_frame():
     testable with a static image instead.
 
     Returns:
-        numpy.ndarray: a BGR image frame, shape (H, W, 3).
+        numpy.ndarray: a BGR image frame, shape (IMAGE_HEIGHT, IMAGE_WIDTH, 3),
+        dtype uint8. If the camera delivers a different size, resize the frame
+        before returning it, because downstream pixel coordinates assume this size.
     """
     raise NotImplementedError
 
@@ -36,25 +49,19 @@ def main():
     start_time = time.time()
 
     while True:
-        if TimerCheck(start_time, TIMEOUT_LIMIT_SECONDS):
+        if TimerCheck(start_time, TIMEOUT_SECONDS):
             break
 
         frame = capture_frame()
         color_counts = ColorCounter(frame)
         p_vector = ColorLocator(color_counts)
 
-        if p_vector is IDLE_POSITION:
+        if p_vector is IDLE_SENTINEL:
             IdleAction()
         else:
-            dominant_color = max(color_counts, key=color_counts.get)
-            if dominant_color == "green":
-                GreenAction(p_vector)
-            elif dominant_color == "blue":
-                BlueAction(p_vector)
-            elif dominant_color == "red":
-                RedAction(p_vector)
-            else:
-                IdleAction()
+            # On a tie, the color listed first in TRACKED_COLORS wins.
+            dominant_color = max(TRACKED_COLORS, key=color_counts.__getitem__)
+            COLOR_ACTIONS[dominant_color](p_vector)
 
 
 if __name__ == "__main__":

@@ -5,25 +5,30 @@ produced by vision.color_counter.ColorCounter, so it can be unit tested with
 hand-built dicts (no image or robot required).
 """
 
-# Sentinel returned by ColorLocator when no tracked color is present in
-# sufficient quantity to act on. main.py treats this as "go idle".
-IDLE_POSITION = None
+from config import IDLE_SENTINEL, MIN_PIXEL_THRESHOLD, TRACKED_COLORS
 
 
 def ColorLocator(color_counts):
     """Determine the 2D position of the dominant tracked color.
 
     Args:
-        color_counts: dict[str, int], per-color pixel counts as produced by
-            vision.color_counter.ColorCounter (keys are color names, values
-            are pixel counts).
+        color_counts: dict[str, int], as returned by
+            vision.color_counter.ColorCounter (every key in
+            config.TRACKED_COLORS is present).
 
     Returns:
-        tuple[float, float] | None: an (x, y) position vector describing where
-        the dominant color is in the frame (e.g. normalized offset from
-        center), or IDLE_POSITION (None) if no color meets the detection
-        threshold. Callers determine *which* color is dominant themselves
-        (e.g. via max(color_counts, key=color_counts.get)) since this
-        function only reports position, not identity.
+        tuple[float, float] | None:
+          - config.IDLE_SENTINEL (None) if every count is below
+            config.MIN_PIXEL_THRESHOLD.
+          - Otherwise (x, y): the centroid of the dominant color in pixel
+            coordinates, with the origin at the top-left,
+            0 <= x < IMAGE_WIDTH and 0 <= y < IMAGE_HEIGHT.
+        This function reports only where the color is, not which color it is.
+        The caller works out the dominant color itself (see "Dominant color"
+        in docs/task_contracts.md).
+
+    Note:
+        OPEN ISSUE: pixel counts carry no location, so the centroid can't be
+        computed from color_counts alone. See docs/task_contracts.md.
     """
     raise NotImplementedError

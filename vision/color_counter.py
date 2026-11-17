@@ -4,20 +4,23 @@ No hardware/camera calls belong in this module -- it must be testable against
 static images loaded from tests/sample_images/ with nothing but numpy/OpenCV.
 """
 
-# Names of the colors this pipeline tracks. Kept here (not as a global mutable
-# state) purely as a shared constant that vision/ and motion/ can both import.
-TRACKED_COLORS = ("green", "blue", "red")
+from config import COMMAND_COLORS, TRACKED_COLORS
 
 
 def ColorCounter(image):
     """Count pixels of each tracked color in a camera frame.
 
+    Convert the frame from BGR to HSV, build one mask for each HSV range in
+    config.COMMAND_COLORS, and OR each color's masks together. That way a pixel
+    is counted at most once per color, even for red, which has two ranges.
+
     Args:
         image: numpy.ndarray, a BGR image frame (as returned by cv2.VideoCapture
-            or cv2.imread), shape (H, W, 3).
+            or cv2.imread), shape (H, W, 3), dtype uint8.
 
     Returns:
-        dict[str, int]: mapping from color name (one of TRACKED_COLORS) to the
-        number of pixels in `image` matching that color's threshold range.
+        dict[str, int]: one entry for every name in config.TRACKED_COLORS. All
+        keys are always present. Each value is the number of matching pixels
+        (>= 0; 0 when the color is absent).
     """
     raise NotImplementedError

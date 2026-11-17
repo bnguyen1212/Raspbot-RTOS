@@ -13,6 +13,9 @@ for the function signatures each module must implement.
 
 ## Project Structure
 
+- `config.py` — every shared constant (HSV color ranges, image size, thresholds,
+  timeout, motion speeds and timing). Modules import these from here; nothing
+  hardcodes them.
 - `scheduler/` — the round-robin loop and timer/safety cutoff logic (`TimerCheck`,
   `round_robin`). No hardware or vision code lives here.
 - `vision/` — color counting and localization from camera frames (`ColorCounter`,

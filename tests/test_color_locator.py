@@ -6,7 +6,8 @@ produce them), so no image or robot is required.
 
 import pytest
 
-from vision.color_locator import ColorLocator, IDLE_POSITION
+from config import IDLE_SENTINEL
+from vision.color_locator import ColorLocator
 
 
 def test_color_locator_returns_idle_sentinel_when_no_colors_detected():
