@@ -16,7 +16,7 @@ import numpy as np
 from config import TIMEOUT_SECONDS, Position, RedState
 
 
-def TimerCheck(start_time: float, now: float) -> bool:
+def TimerCheck(start_time: float, now: float, *, timeout: float = TIMEOUT_SECONDS) -> bool:
     """Safety cutoff check for the round-robin loop.
 
     This is a pure function: it doesn't read a clock. The caller passes both
@@ -26,13 +26,15 @@ def TimerCheck(start_time: float, now: float) -> bool:
         start_time: float, the time.monotonic() reading taken once, before the
             loop starts.
         now: float, a fresh time.monotonic() reading for this loop pass.
+        timeout: float, keyword-only, defaults to config.TIMEOUT_SECONDS.
+            Only overridden by main.py's --timeout flag for quick test runs.
 
     Returns:
-        bool: True when now - start_time > config.TIMEOUT_SECONDS (the caller
-        must stop the loop), False otherwise.
+        bool: True when now - start_time > timeout (the caller must stop the
+        loop), False otherwise.
     """
 
-    if (now - start_time > TIMEOUT_SECONDS):
+    if (now - start_time > timeout):
         return True
     else:
         return False
@@ -76,6 +78,7 @@ def run_loop(
     stop_motors: Callable[[], None],
     release_camera: Callable[[], None],
     clock: Callable[[], float] = time.monotonic,
+    timeout: float = TIMEOUT_SECONDS,
 ) -> None:
     """Run StartupAction once, then the round-robin task loop until timeout.
 
@@ -104,6 +107,8 @@ def run_loop(
         clock: zero-arg callable returning monotonic seconds; every time
             reading in the loop goes through it. main() passes time.monotonic;
             tests pass a fake clock so timeouts happen instantly.
+        timeout: float, seconds before TimerCheck stops the loop. Defaults to
+            config.TIMEOUT_SECONDS; main.py's --timeout overrides it.
 
     Returns:
         None
@@ -114,7 +119,7 @@ def run_loop(
         start_time = clock()
 
         while True:
-            if TimerCheck(start_time, clock()):
+            if TimerCheck(start_time, clock(), timeout=timeout):
                 break
 
             # Vision runs on every pass, even mid-turn, because the rearm rule
