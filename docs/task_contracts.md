@@ -37,9 +37,10 @@ nothing from the project, so it can't create a circular import. Values marked
 
 | Name | Type | Default | Meaning |
 |---|---|---|---|
-| `COMMAND_COLORS` | `dict[str, tuple[HSVRange, ...]]` | see file | HSV ranges for each color. A pixel belongs to a color if it falls in **any** of that color's ranges. `"green"` and `"blue"` have one range each. `"red"` has two (H 0–10 and H 170–179) because red hue wraps around 0/180. **TODO: tune under real lighting.** |
+| `COMMAND_COLORS` | `dict[str, tuple[HSVRange, ...]]` | see file | HSV ranges for each color. A pixel belongs to a color if it falls in **any** of that color's ranges. `"green"` and `"blue"` have one range each. `"red"` has two (H 0–10 and H 170–179) because red hue wraps around 0/180. Red's minimum saturation is 160, higher than the others, so skin isn't counted as red. **TODO: tune under real lighting.** |
 | `TRACKED_COLORS` | `tuple[str, ...]` | `("green", "blue", "red")` | `tuple(COMMAND_COLORS)`. Its order is the tie-break order for the winning color. |
-| `MIN_PIXEL_THRESHOLD` | `int` | `500` | A color with a count **below** this is "not detected". **TODO: tune.** |
+| `MASK_OPEN_KERNEL_PX` | `int` | `3` | Noise removal: each color's mask gets a morphological opening with a square kernel this many pixels wide before it is counted or located, which drops specks smaller than the kernel. Must be odd (an even kernel shifts the mask by a pixel); `1` (or `0`) turns it off. **TODO: tune.** |
+| `MIN_PIXEL_THRESHOLD` | `int` | `1500` | A color with a count **below** this is "not detected". **TODO: tune.** |
 | `IMAGE_WIDTH` | `int` | `640` | Frame width that `capture_frame()` must return. |
 | `IMAGE_HEIGHT` | `int` | `480` | Frame height that `capture_frame()` must return. |
 | `IMAGE_CENTER_X` | `int` | `320` | `IMAGE_WIDTH // 2` |
@@ -265,6 +266,16 @@ pass. `log` receives each line; tests pass `list.append` to capture them.
     color's `config.COMMAND_COLORS` ranges, after converting BGR to HSV.
   - Masks for one color are OR'd together, so a pixel counts at most once per
     color.
+  - Each color's mask is then opened with a `config.MASK_OPEN_KERNEL_PX`
+    square kernel to remove speckle noise, and the remaining pixels are
+    counted.
+- **Shared helper:** the BGR-to-HSV conversion, the thresholding and the
+  opening live in `vision/hsv_mask.py` (`to_hsv`, `color_mask`,
+  `mask_centroid`). `ColorCounter` and `ColorLocator` both use it, so they
+  always agree on which pixels match a color.
+- **Raises** `TypeError`/`ValueError` if `image` isn't a non-empty
+  `(H, W, 3)` `uint8` array. (A float image would otherwise be converted on a
+  0–360 hue scale and silently match the wrong pixels.)
 - **Constraints:** No camera or hardware calls. Must run correctly given only a
   static image array (see `tests/sample_images/`).
 
@@ -284,13 +295,17 @@ pass. `log` receives each line; tests pass `list.append` to capture them.
      `config.IDLE_SENTINEL`, which is `(None, None)`.
   3. Otherwise the locator **recomputes only the winning color's mask** from
      `image`, using `config.COMMAND_COLORS`: convert BGR to HSV, then OR
-     together that color's ranges. It doesn't rebuild masks for the other
-     colors. It returns the centroid of that mask.
+     together that color's ranges, then open it, exactly as `ColorCounter`
+     does (same helper). It doesn't rebuild masks for the other colors. It
+     returns the centroid of that mask: the mean `(x, y)` of its pixels.
 - **Output:** exactly one of:
   - `(winning_color, (x, y))` — `winning_color` is a `str` from
-    `TRACKED_COLORS`, and `(x, y)` is a `Position`. Because the winner met the
-    threshold, the mask is non-empty.
-  - `(None, None)` (`IDLE_SENTINEL`) — no color met the threshold.
+    `TRACKED_COLORS`, and `(x, y)` is a `Position` made of plain `float`s.
+    Because the winner met the threshold, the mask is non-empty.
+  - `(None, None)` (`IDLE_SENTINEL`) — no color met the threshold. It's also
+    returned, defensively, if `color_counts` didn't come from `image` and the
+    winner's mask turns out empty, so a mismatch never yields a made-up
+    position.
 - **Constraints:** No camera or hardware calls.
 
 ## motion/actions.py

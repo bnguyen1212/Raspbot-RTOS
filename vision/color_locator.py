@@ -10,6 +10,7 @@ from __future__ import annotations
 import numpy as np
 
 from config import COMMAND_COLORS, IDLE_SENTINEL, MIN_PIXEL_THRESHOLD, TRACKED_COLORS, Position
+from vision.hsv_mask import color_mask, mask_centroid, to_hsv
 
 
 def ColorLocator(
@@ -23,8 +24,10 @@ def ColorLocator(
        IDLE_SENTINEL.
     3. Otherwise, recompute ONLY the winning color's mask from `image`
        (convert BGR to HSV, then OR together that color's
-       config.COMMAND_COLORS ranges), and return the centroid of that mask.
-       Don't rebuild masks for the other colors.
+       config.COMMAND_COLORS ranges), and return the centroid of that mask:
+       the average position of all matching pixels. Don't rebuild masks for
+       the other colors. The mask comes from the same helper ColorCounter
+       uses (vision.hsv_mask), so it matches what was counted.
 
     Args:
         color_counts: dict[str, int], as returned by
@@ -39,6 +42,22 @@ def ColorLocator(
             and (x, y) is the centroid of its mask in pixel coordinates, with
             the origin at the top-left, 0 <= x < W and 0 <= y < H.
           - IDLE_SENTINEL, i.e. (None, None), if no color reaches
-            MIN_PIXEL_THRESHOLD.
+            MIN_PIXEL_THRESHOLD. Also returned, defensively, if the counts
+            don't match `image` and the winner's mask turns out empty: the
+            robot then stays still instead of steering toward a made-up
+            position.
+
+    Raises:
+        KeyError: if a TRACKED_COLORS key is missing from color_counts.
+        TypeError / ValueError: if `image` isn't a non-empty (H, W, 3) uint8
+            numpy array (see vision.hsv_mask.to_hsv).
     """
-    raise NotImplementedError
+    winning_color = max(TRACKED_COLORS, key=color_counts.__getitem__)
+    if color_counts[winning_color] < MIN_PIXEL_THRESHOLD:
+        return IDLE_SENTINEL
+
+    mask = color_mask(to_hsv(image), COMMAND_COLORS[winning_color])
+    position = mask_centroid(mask)
+    if position is None:
+        return IDLE_SENTINEL
+    return winning_color, position
