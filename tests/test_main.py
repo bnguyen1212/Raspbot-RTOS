@@ -252,6 +252,17 @@ def test_camera_opens_device_resizes_frames_and_releases(monkeypatch):
     assert capture.release_count == 1
 
 
+def test_camera_read_raw_returns_frame_unresized(monkeypatch):
+    frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+    monkeypatch.setattr(
+        camera_module.cv2, "VideoCapture", lambda index: FakeVideoCapture(index, frames=[frame])
+    )
+    cam = Camera(0, IMAGE_WIDTH, IMAGE_HEIGHT)
+    assert cam.read_raw().shape == (720, 1280, 3)
+    with pytest.raises(RuntimeError, match="read failed"):
+        cam.read_raw()
+
+
 def test_camera_that_cannot_open_raises(monkeypatch):
     monkeypatch.setattr(
         camera_module.cv2, "VideoCapture", lambda index: FakeVideoCapture(index, opened=False)
