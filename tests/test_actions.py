@@ -1,7 +1,8 @@
 """Unit tests for motion.actions, using FakeMotorDriver and a fake clock.
 
-No hardware and no real waiting: every action gets a FakeMotorDriver, and
-RedAction's times come from FakeClock.
+No hardware and no real waiting: every action gets a FakeMotorDriver (or, in
+the default-driver tests, a real RaspbotMotorDriver on a fake Raspbot_Lib),
+and RedAction's times come from FakeClock.
 """
 
 from __future__ import annotations
@@ -17,8 +18,16 @@ from config import (
     RedState,
 )
 from motion import actions
-from motion.actions import BlueAction, GreenAction, IdleAction, RedAction, StartupAction
-from motion.driver import FakeMotorDriver
+from motion.actions import (
+    BlueAction,
+    GreenAction,
+    IdleAction,
+    RedAction,
+    ShutdownAction,
+    StartupAction,
+)
+from motion.driver import FakeMotorDriver, default_driver
+from motion.mecanum import RaspbotMotorDriver
 from motion.kinematics import rotate_in_place, strafe
 from scheduler.dry_run import DryRunMotion
 
@@ -169,11 +178,14 @@ def test_red_start_leaves_rearm_unchanged(driver):
     assert state["red_rearm"] is False
 
 
-def test_red_turning_makes_no_driver_call_and_keeps_state(driver):
+def test_red_turning_resends_cw_and_keeps_state(driver):
+    # Every call sets the wheels explicitly, so a turning pass sends the same
+    # rotation again instead of nothing.
     turning: RedState = {"red_start": START, "red_rearm": True}
-    for elapsed in (0.0, SECONDS_PER_180 / 2, SECONDS_PER_180 - 0.001):
+    elapsed_values = (0.0, SECONDS_PER_180 / 2, SECONDS_PER_180 - 0.001)
+    for elapsed in elapsed_values:
         assert RedAction(turning, START + elapsed, driver=driver) == turning
-    assert driver.calls == []
+    assert driver.calls == [("set_wheels", rotate_in_place("cw"))] * len(elapsed_values)
 
 
 def test_red_finishes_exactly_at_seconds_per_180(driver):
@@ -221,7 +233,8 @@ def test_red_full_turn_on_a_fake_clock(driver):
             break
         clock.advance(step)
 
-    assert driver.calls == [("set_wheels", rotate_in_place("cw")), ("stop", ())]
+    turning_passes = len(history) - 1  # every pass but the last
+    assert driver.calls == [("set_wheels", rotate_in_place("cw"))] * turning_passes + [("stop", ())]
     assert driver.wheels == (0, 0, 0, 0)
     assert clock() - START == SECONDS_PER_180  # stopped on the first pass at the limit
     assert len(history) == SECONDS_PER_180 / step + 1
@@ -260,9 +273,118 @@ def test_actions_use_default_driver_only_when_none_is_passed(monkeypatch):
     assert len(passed.calls) == 1
 
 
-def test_red_turning_pass_never_looks_up_the_default_driver(monkeypatch):
-    def fail() -> FakeMotorDriver:
-        raise AssertionError("default_driver() called on a pass with no motion")
+def test_default_driver_is_the_real_driver_created_once(fake_raspbot_lib):
+    # A fake Raspbot_Lib stands in for the board; the driver itself is real.
+    GreenAction((RIGHT_X, Y))
+    IdleAction()
+    assert isinstance(default_driver(), RaspbotMotorDriver)
+    assert len(fake_raspbot_lib) == 1  # one Raspbot for every action
+    assert fake_raspbot_lib[0].calls[-8:] == [(0, 0), (2, 0), (1, 0), (3, 0)] * 2
 
-    monkeypatch.setattr(actions, "default_driver", fail)
-    RedAction({"red_start": START, "red_rearm": True}, START + 0.1)
+
+# ---------------------------------------------------------------------------
+# ShutdownAction
+# ---------------------------------------------------------------------------
+
+def test_shutdown_stops_the_given_driver(driver):
+    GreenAction((RIGHT_X, Y), driver=driver)
+    ShutdownAction(driver=driver)
+    assert driver.calls[-1] == ("stop", ())
+    assert driver.wheels == (0, 0, 0, 0)
+
+
+def test_shutdown_is_safe_to_call_repeatedly(driver):
+    for _ in range(3):
+        ShutdownAction(driver=driver)
+    assert driver.calls == [("stop", ())] * 3
+    assert driver.wheels == (0, 0, 0, 0)
+
+
+def test_shutdown_stops_the_existing_default_driver(monkeypatch):
+    default = FakeMotorDriver()
+    monkeypatch.setattr(actions, "existing_default_driver", lambda: default)
+    ShutdownAction()
+    ShutdownAction()
+    assert default.calls == [("stop", ())] * 2
+
+
+def test_shutdown_never_creates_a_driver(fake_raspbot_lib):
+    # No action has run, so there's no default driver yet.
+    ShutdownAction()
+    ShutdownAction()
+    assert fake_raspbot_lib == []  # the bus was never opened
+
+
+def test_shutdown_after_a_run_stops_the_same_board(fake_raspbot_lib):
+    BlueAction((LEFT_X, Y))
+    ShutdownAction()
+    assert len(fake_raspbot_lib) == 1
+    assert fake_raspbot_lib[0].calls[-8:] == [(0, 0), (2, 0), (1, 0), (3, 0)] * 2
+
+
+# ---------------------------------------------------------------------------
+# Every call sets the wheels explicitly
+# ---------------------------------------------------------------------------
+# The board keeps running the last command (no watchdog). So every action
+# must set the wheels on every call, whatever was running before. Each case
+# starts with the wheels left running by something else, then checks the
+# action's own call decides what the wheels do.
+
+LEFTOVER = strafe("left")  # what the previous action left running
+STOPPED = (0, 0, 0, 0)
+
+EVERY_CALL_CASES = [
+    ("idle", lambda d: IdleAction(driver=d), STOPPED),
+    ("green-left", lambda d: GreenAction((LEFT_X, Y), driver=d), rotate_in_place("ccw")),
+    ("green-right", lambda d: GreenAction((RIGHT_X, Y), driver=d), rotate_in_place("cw")),
+    ("green-centered", lambda d: GreenAction((IMAGE_CENTER_X, Y), driver=d), STOPPED),
+    ("blue-left", lambda d: BlueAction((LEFT_X, Y), driver=d), strafe("left")),
+    ("blue-right", lambda d: BlueAction((RIGHT_X, Y), driver=d), strafe("right")),
+    ("blue-centered", lambda d: BlueAction((IMAGE_CENTER_X, Y), driver=d), STOPPED),
+    (
+        "red-start",
+        lambda d: RedAction({"red_start": None, "red_rearm": True}, START, driver=d),
+        rotate_in_place("cw"),
+    ),
+    (
+        "red-turning",
+        lambda d: RedAction({"red_start": START, "red_rearm": True}, START + 0.1, driver=d),
+        rotate_in_place("cw"),
+    ),
+    (
+        "red-finished",
+        lambda d: RedAction(
+            {"red_start": START, "red_rearm": True}, START + SECONDS_PER_180, driver=d
+        ),
+        STOPPED,
+    ),
+]
+
+
+@pytest.mark.parametrize(
+    ("action", "expected_wheels"),
+    [case[1:] for case in EVERY_CALL_CASES],
+    ids=[case[0] for case in EVERY_CALL_CASES],
+)
+def test_every_per_loop_call_sets_the_wheels_exactly_once(driver, action, expected_wheels):
+    driver.set_wheels(*LEFTOVER)
+    driver.calls.clear()
+    action(driver)
+    assert len(driver.calls) == 1
+    assert driver.wheels == expected_wheels
+
+
+def test_startup_sets_the_wheels_and_leaves_them_stopped(driver):
+    driver.set_wheels(*LEFTOVER)
+    driver.calls.clear()
+    StartupAction(driver=driver, sleep=lambda s: None)
+    assert [name for name, _ in driver.calls] == ["set_wheels", "stop"]
+    assert driver.wheels == STOPPED
+
+
+def test_shutdown_sets_the_wheels_to_stopped(driver):
+    driver.set_wheels(*LEFTOVER)
+    driver.calls.clear()
+    ShutdownAction(driver=driver)
+    assert driver.calls == [("stop", ())]
+    assert driver.wheels == STOPPED

@@ -105,10 +105,22 @@ TIMEOUT_SECONDS = 20.0
 # ---------------------------------------------------------------------------
 # Motion
 # ---------------------------------------------------------------------------
-# Wheel speed magnitudes, in the Yahboom motor library's speed units.
-# TODO: placeholder -- confirm the library's range and tune on the robot.
-ROTATE_SPEED = 50
-STRAFE_SPEED = 50
+# Wheel speeds are normalized: -1.0 is full speed backward, 1.0 full speed
+# forward. motion.mecanum converts them to the library's -255..255.
+#
+# MAX_SPEED is the safety cap: motion.mecanum clamps every wheel speed to
+# +/-MAX_SPEED before sending it, whatever the caller asked for.
+# TODO: placeholder -- raise it only after the robot has been tested at this cap.
+MAX_SPEED = 0.4
+
+# Wheel speed magnitudes for rotating and strafing, in the same normalized units.
+# TODO: placeholder -- tune on the robot.
+ROTATE_SPEED = 0.2
+STRAFE_SPEED = 0.2
+
+assert 0 < MAX_SPEED <= 1.0, "MAX_SPEED must be in (0, 1.0]"
+assert 0 < ROTATE_SPEED <= MAX_SPEED, "ROTATE_SPEED must be in (0, MAX_SPEED]"
+assert 0 < STRAFE_SPEED <= MAX_SPEED, "STRAFE_SPEED must be in (0, MAX_SPEED]"
 
 # Open-loop rotation timing. There is no gyro, so turns are timed: these are the
 # seconds a rotation at ROTATE_SPEED takes. SECONDS_PER_180 is calibrated on its

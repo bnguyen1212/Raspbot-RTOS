@@ -1,9 +1,8 @@
-"""Unit tests for motion.kinematics: wheel sign patterns for each motion.
+"""Unit tests for motion.kinematics: the logical wheel sign patterns.
 
-Expected values are written as the physical pattern (+1 = wheel drives
-forward) and then passed through the module's SIGN_* constants by
-`on_wheels`. So these tests stay correct after a sign is flipped to match the
-real robot's wiring.
+These are the patterns in logical wheel directions (+ = that wheel drives the
+robot forward). Motor IDs and wiring inversions are motion.mecanum's job and
+are tested in test_mecanum.py.
 """
 
 from __future__ import annotations
@@ -12,22 +11,13 @@ import pytest
 
 from config import ROTATE_SPEED, STRAFE_SPEED
 from motion import kinematics
-from motion.kinematics import WheelSpeeds, rotate_in_place, strafe, wheel_speeds
+from motion.kinematics import rotate_in_place, strafe, wheel_speeds
 
 
-def on_wheels(fl: float, fr: float, rl: float, rr: float) -> WheelSpeeds:
-    """Apply the module's current wheel polarity to a physical pattern."""
-    return (
-        kinematics.SIGN_FRONT_LEFT * fl,
-        kinematics.SIGN_FRONT_RIGHT * fr,
-        kinematics.SIGN_REAR_LEFT * rl,
-        kinematics.SIGN_REAR_RIGHT * rr,
-    )
-
-
-def test_sign_constants_are_plus_or_minus_one():
-    for name in ("SIGN_FRONT_LEFT", "SIGN_FRONT_RIGHT", "SIGN_REAR_LEFT", "SIGN_REAR_RIGHT"):
-        assert getattr(kinematics, name) in (1, -1), name
+def test_no_hardware_tunables():
+    # Wiring belongs in motion.mecanum, not here.
+    tunables = [n for n in vars(kinematics) if n.startswith(("SIGN_", "INVERT", "MOTOR_ID"))]
+    assert tunables == []
 
 
 # ---------------------------------------------------------------------------
@@ -39,17 +29,17 @@ def test_zero_velocity_stops_every_wheel():
 
 
 def test_forward_drives_all_wheels_forward():
-    assert wheel_speeds(10, 0, 0) == on_wheels(10, 10, 10, 10)
+    assert wheel_speeds(0.3, 0, 0) == (0.3, 0.3, 0.3, 0.3)
 
 
 def test_positive_vy_is_the_right_strafe_pattern():
     # Front-left and rear-right forward, the other diagonal backward.
-    assert wheel_speeds(0, 10, 0) == on_wheels(10, -10, -10, 10)
+    assert wheel_speeds(0, 0.3, 0) == (0.3, -0.3, -0.3, 0.3)
 
 
 def test_positive_omega_is_the_clockwise_pattern():
     # Left side forward, right side backward: the robot turns right.
-    assert wheel_speeds(0, 0, 10) == on_wheels(10, -10, 10, -10)
+    assert wheel_speeds(0, 0, 0.3) == (0.3, -0.3, 0.3, -0.3)
 
 
 def test_motions_combine_linearly():
@@ -64,12 +54,12 @@ def test_motions_combine_linearly():
 
 def test_rotate_cw_sign_pattern():
     s = ROTATE_SPEED
-    assert rotate_in_place("cw") == on_wheels(s, -s, s, -s)
+    assert rotate_in_place("cw") == (s, -s, s, -s)
 
 
 def test_rotate_ccw_sign_pattern():
     s = ROTATE_SPEED
-    assert rotate_in_place("ccw") == on_wheels(-s, s, -s, s)
+    assert rotate_in_place("ccw") == (-s, s, -s, s)
 
 
 def test_rotate_ccw_is_the_opposite_of_cw():
@@ -77,12 +67,11 @@ def test_rotate_ccw_is_the_opposite_of_cw():
 
 
 def test_rotate_uses_the_given_speed():
-    assert rotate_in_place("cw", 7) == on_wheels(7, -7, 7, -7)
+    assert rotate_in_place("cw", 0.3) == (0.3, -0.3, 0.3, -0.3)
 
 
 def test_rotation_has_no_net_forward_or_sideways_drive():
-    # Every wheel turns at the same magnitude; the two sides cancel out.
-    fl, fr, rl, rr = on_wheels(*rotate_in_place("cw"))  # back to physical
+    fl, fr, rl, rr = rotate_in_place("cw")
     assert fl + fr + rl + rr == 0  # no forward component
     assert fl - fr - rl + rr == 0  # no strafe component
 
@@ -93,12 +82,12 @@ def test_rotation_has_no_net_forward_or_sideways_drive():
 
 def test_strafe_right_sign_pattern():
     s = STRAFE_SPEED
-    assert strafe("right") == on_wheels(s, -s, -s, s)
+    assert strafe("right") == (s, -s, -s, s)
 
 
 def test_strafe_left_sign_pattern():
     s = STRAFE_SPEED
-    assert strafe("left") == on_wheels(-s, s, s, -s)
+    assert strafe("left") == (-s, s, s, -s)
 
 
 def test_strafe_left_is_the_opposite_of_right():
@@ -106,17 +95,17 @@ def test_strafe_left_is_the_opposite_of_right():
 
 
 def test_strafe_uses_the_given_speed():
-    assert strafe("right", 7) == on_wheels(7, -7, -7, 7)
+    assert strafe("right", 0.3) == (0.3, -0.3, -0.3, 0.3)
 
 
 def test_strafe_has_no_net_forward_drive_or_rotation():
-    fl, fr, rl, rr = on_wheels(*strafe("right"))  # back to physical
+    fl, fr, rl, rr = strafe("right")
     assert fl + fr + rl + rr == 0  # no forward component
     assert fl - fr + rl - rr == 0  # no rotation component
 
 
 # ---------------------------------------------------------------------------
-# Bad input and polarity flips
+# Bad input
 # ---------------------------------------------------------------------------
 
 @pytest.mark.parametrize("bad", ["left", "CW", "", "clockwise"])
@@ -129,21 +118,3 @@ def test_rotate_rejects_unknown_direction(bad):
 def test_strafe_rejects_unknown_direction(bad):
     with pytest.raises(ValueError):
         strafe(bad)
-
-
-@pytest.mark.parametrize(
-    ("name", "index"),
-    [
-        ("SIGN_FRONT_LEFT", 0),
-        ("SIGN_FRONT_RIGHT", 1),
-        ("SIGN_REAR_LEFT", 2),
-        ("SIGN_REAR_RIGHT", 3),
-    ],
-)
-def test_flipping_one_sign_flips_only_that_wheel(monkeypatch, name, index):
-    before = rotate_in_place("cw")
-    monkeypatch.setattr(kinematics, name, -getattr(kinematics, name))
-    after = rotate_in_place("cw")
-    for i in range(4):
-        expected = -before[i] if i == index else before[i]
-        assert after[i] == expected

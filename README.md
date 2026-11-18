@@ -10,13 +10,12 @@ usage details will be filled in as the implementation lands.
 
 - **Done:** the scheduler (`scheduler/`) and the `main.py` wiring, including
   `--dry-run` and safe shutdown.
-- **Motion logic done, hardware not yet:** `motion/` has its kinematics,
-  centering and actions, tested against a fake driver. The real motor driver
-  (`motion.driver.default_driver()`) isn't written yet.
+- **Motion written, NOT verified on the robot:** `motion/` has its
+  kinematics, centering, actions, `ShutdownAction` and the real Raspbot_Lib
+  driver (`motion/mecanum.py`). It's all tested against fakes only. The motor-ID
+  and inversion block at the top of `motion/mecanum.py` is a guess that must be
+  checked on the robot, with the wheels off the ground, before a real run.
 - **Still stubs:** `vision/`.
-- **Still needed:** a motion stop action (`ShutdownAction`). Without it, a
-  real run can't stop the wheels on exit, so **don't run `main.py` on the
-  robot without `--dry-run` until it exists.** See "Shutdown" in the contract.
 
 See [docs/task_contracts.md](docs/task_contracts.md) for the function
 signatures each module must implement.
@@ -40,10 +39,15 @@ signatures each module must implement.
   `ColorLocator`). Pure functions over image arrays — no camera or hardware calls.
 - `motion/` — robot actions and mecanum wheel control. `motion/actions.py`
   is the only place `main.py` calls into to move the robot. Underneath it,
-  `kinematics.py` (wheel speeds, including the per-wheel `SIGN_*` polarity) and
-  `centering.py` are pure and hardware-free, and `driver.py` holds the
-  `MotorDriver` interface, a recording `FakeMotorDriver` for tests, and the lazily
-  loaded real driver.
+  `kinematics.py` (logical wheel speeds) and `centering.py` are pure and
+  hardware-free. `driver.py` holds the `MotorDriver` interface, a recording
+  `FakeMotorDriver` for tests, and the lazily created default driver.
+  `mecanum.py` is the real driver and the only file that imports Raspbot_Lib.
+  Its "verify on robot" block holds the motor-ID mapping and per-wheel
+  inversions.
+- `tools/emergency_stop.py` — standalone script for the robot that writes speed 0
+  to all four motors (`python3 tools/emergency_stop.py`). It imports nothing from
+  this repo.
 - `tests/` — unit tests, including static sample images (`tests/sample_images/`)
   for offline vision testing.
 - `docs/` — task/interface contracts shared across contributors.

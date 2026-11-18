@@ -136,6 +136,7 @@ def test_real_mode_wiring_uses_motion_actions(card_image):
     assert tasks["startup_action"] is actions.StartupAction
     assert tasks["idle_action"] is actions.IdleAction
     assert tasks["red_action"] is actions.RedAction
+    assert tasks["stop_motors"] is actions.ShutdownAction
     assert tasks["color_actions"] == {"green": actions.GreenAction, "blue": actions.BlueAction}
 
 

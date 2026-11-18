@@ -38,16 +38,6 @@ from vision.color_counter import ColorCounter
 from vision.color_locator import ColorLocator
 
 
-def stop_motors() -> None:
-    """Stop all wheels. Placeholder until motion/ provides a stop action.
-
-    TODO: replace with the motion layer's stop action (e.g. a ShutdownAction()
-    in motion/actions.py that calls the motor driver's stop()). Agree on it
-    with the motion owner -- see "Shutdown" in docs/task_contracts.md.
-    """
-    raise NotImplementedError
-
-
 def _positive_float(text: str) -> float:
     """argparse type for --timeout: a number greater than 0."""
     value = float(text)
@@ -116,14 +106,21 @@ def motion_tasks(dry_run: bool) -> dict[str, Any]:
 
     # Imported here rather than at the top of the file, so a dry run never
     # loads motion/ (and, through it, the Yahboom motor library).
-    from motion.actions import BlueAction, GreenAction, IdleAction, RedAction, StartupAction
+    from motion.actions import (
+        BlueAction,
+        GreenAction,
+        IdleAction,
+        RedAction,
+        ShutdownAction,
+        StartupAction,
+    )
 
     return {
         "startup_action": StartupAction,
         "idle_action": IdleAction,
         "color_actions": {"green": GreenAction, "blue": BlueAction},
         "red_action": RedAction,
-        "stop_motors": stop_motors,
+        "stop_motors": ShutdownAction,
     }
 
 

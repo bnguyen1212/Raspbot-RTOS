@@ -11,10 +11,13 @@ keyword-only argument:
 The default is looked up on each call, not when this module is imported, so
 importing motion.actions never loads the motor library.
 
-The per-loop actions (Idle, Green, Blue and Red) never block. Each one makes at
-most one driver call and returns, so the loop gets back to TimerCheck promptly.
-A driver call leaves the wheels running until the next call changes them. So a
-Green or Blue "step" lasts one loop pass, and the next pass corrects it or stops.
+Every action sets the wheels explicitly on every call. The motor board has no
+watchdog and keeps running the last command it got, so an action that skipped
+its call would leave whatever the previous action sent still running. The
+per-loop actions (Idle, Green, Blue and Red) make exactly one driver call
+each and return without blocking, so the loop gets back to TimerCheck
+promptly. A Green or Blue "step" lasts one loop pass, and the next pass
+corrects it or stops.
 """
 
 from __future__ import annotations
@@ -24,7 +27,7 @@ from collections.abc import Callable
 
 from config import SECONDS_PER_180, SECONDS_PER_360, Position, RedState
 from motion.centering import centering_command
-from motion.driver import MotorDriver, default_driver
+from motion.driver import MotorDriver, default_driver, existing_default_driver
 from motion.kinematics import rotate_in_place, strafe
 
 
@@ -119,8 +122,13 @@ def RedAction(
     | Condition                          | Driver call          | Returned state                          |
     |------------------------------------|----------------------|-----------------------------------------|
     | red_start is None (start)          | set_wheels(cw)       | red_start = now; red_rearm unchanged    |
-    | now - red_start < SECONDS_PER_180  | none                 | unchanged                               |
+    | now - red_start < SECONDS_PER_180  | set_wheels(cw) again | unchanged                               |
     | otherwise (finished)               | stop()               | red_start = None, red_rearm = False     |
+
+    The turning passes send the clockwise rotation again rather than nothing,
+    so every call sets the wheels explicitly. Re-sending the same command
+    doesn't change the motion, and it restarts the turn if Raspbot_Lib
+    silently dropped the first write.
 
     `state` itself is never modified. A new dict is returned every time, and
     the caller must rebind: state = RedAction(state, now).
@@ -128,17 +136,38 @@ def RedAction(
     Args:
         state: RedState, {"red_start": float | None, "red_rearm": bool}.
         now: a fresh time.monotonic() reading.
-        driver: MotorDriver to use; None means default_driver(). It's looked
-            up only on the passes that make a driver call.
+        driver: MotorDriver to use; None means default_driver().
 
     Returns:
         RedState: the updated state.
     """
+    motors = _resolve(driver)
     red_start = state["red_start"]
     if red_start is None:
-        _resolve(driver).set_wheels(*rotate_in_place("cw"))
+        motors.set_wheels(*rotate_in_place("cw"))
         return {**state, "red_start": now}
     if now - red_start < SECONDS_PER_180:
+        motors.set_wheels(*rotate_in_place("cw"))
         return {**state}
-    _resolve(driver).stop()
+    motors.stop()
     return {**state, "red_start": None, "red_rearm": False}
+
+
+def ShutdownAction(*, driver: MotorDriver | None = None) -> None:
+    """Stop the wheels at the end of a run. run_loop calls it as stop_motors.
+
+    With no `driver`, it stops the cached default driver if one has been
+    created, and does nothing otherwise. It never creates a driver, so a run
+    that failed before touching the motors doesn't open the I2C bus just to
+    stop them. Safe to call any number of times.
+
+    Raspbot_Lib swallows I2C errors, so this can't confirm the wheels stopped
+    (see motion.mecanum).
+
+    Args:
+        driver: MotorDriver to stop; None means the existing default driver,
+            if there is one.
+    """
+    motors = existing_default_driver() if driver is None else driver
+    if motors is not None:
+        motors.stop()

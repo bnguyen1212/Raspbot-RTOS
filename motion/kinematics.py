@@ -1,8 +1,9 @@
 """Mecanum wheel kinematics: chassis motion in, four wheel speeds out.
 
-Pure functions only. This module imports no hardware library and keeps no
-state, so everything here can be tested on any machine. motion.actions turns
-these tuples into motor commands through a motion.driver.MotorDriver.
+Pure math only. This module imports no hardware library, keeps no state and
+has no hardware tunables. Which motor ID drives which wheel, and whether a
+wheel is wired backwards, live in motion.mecanum. So the sign patterns here
+are the logical ones: +1 means "this wheel drives the robot forward".
 
 Chassis frame (robot-centric, seen from above):
     vx     > 0  drives forward
@@ -12,29 +13,15 @@ Chassis frame (robot-centric, seen from above):
 These match the direction words the rest of the project uses ("cw", "right"),
 so a target right of center maps to a positive command.
 
-Wheel speeds are in the motor library's units (see config.ROTATE_SPEED). They
-are not normalized: callers pass speeds that are already in range.
+Wheel speeds are normalized (1.0 = full speed forward; see config.MAX_SPEED).
+Nothing here clamps them: the real driver clamps to config.MAX_SPEED.
 """
 
 from __future__ import annotations
 
-from typing import Final, Literal
+from typing import Literal
 
 from config import ROTATE_SPEED, STRAFE_SPEED
-
-# ---------------------------------------------------------------------------
-# Wheel polarity
-# ---------------------------------------------------------------------------
-# +1 means a positive speed drives that wheel forward. If a wheel turns out to
-# be wired or mounted backwards on the real robot, set its sign to -1 here.
-# That is the only change needed: every speed this module returns goes through
-# these signs.
-#
-# TODO: verify each wheel on the robot (drive forward slowly and watch it).
-SIGN_FRONT_LEFT: Final[int] = 1
-SIGN_FRONT_RIGHT: Final[int] = 1
-SIGN_REAR_LEFT: Final[int] = 1
-SIGN_REAR_RIGHT: Final[int] = 1
 
 # (front_left, front_right, rear_left, rear_right)
 WheelSpeeds = tuple[float, float, float, float]
@@ -54,8 +41,6 @@ def wheel_speeds(vx: float, vy: float, omega: float) -> WheelSpeeds:
         rear_left   = vx - vy + omega
         rear_right  = vx + vy - omega
 
-    Each result is then multiplied by that wheel's SIGN_* constant.
-
     Args:
         vx: forward speed (negative is backward).
         vy: rightward strafe speed (negative is leftward).
@@ -65,10 +50,10 @@ def wheel_speeds(vx: float, vy: float, omega: float) -> WheelSpeeds:
         WheelSpeeds: (front_left, front_right, rear_left, rear_right).
     """
     return (
-        SIGN_FRONT_LEFT * (vx + vy + omega),
-        SIGN_FRONT_RIGHT * (vx - vy - omega),
-        SIGN_REAR_LEFT * (vx - vy + omega),
-        SIGN_REAR_RIGHT * (vx + vy - omega),
+        vx + vy + omega,
+        vx - vy - omega,
+        vx - vy + omega,
+        vx + vy - omega,
     )
 
 
