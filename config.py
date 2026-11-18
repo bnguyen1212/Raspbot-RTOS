@@ -75,6 +75,11 @@ IMAGE_WIDTH = 640
 IMAGE_HEIGHT = 480
 IMAGE_CENTER_X = IMAGE_WIDTH // 2  # 320
 
+# cv2.VideoCapture device index for the USB camera (scheduler.camera.Camera).
+# 0 is usually the built-in webcam on a laptop. main.py --camera overrides it.
+# TODO: confirm the robot's index during integration.
+CAMERA_INDEX = 0
+
 # What ColorLocator returns when no tracked color is detected. It has the same
 # (winning_color, position) shape as a detection, so callers can always unpack
 # `winning_color, p_vector = ColorLocator(...)`.
