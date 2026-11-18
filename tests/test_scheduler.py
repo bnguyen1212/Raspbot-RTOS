@@ -186,6 +186,13 @@ class FakeRobot:
         self._end_of_pass()
         return new_state
 
+    # -- shutdown ------------------------------------------------------------
+    def stop_motors(self):
+        self.calls.append(("stop_motors",))
+
+    def release_camera(self):
+        self.calls.append(("release_camera",))
+
     # -- running -------------------------------------------------------------
     def run(self, **overrides):
         """Call run_loop with every fake task. `overrides` replaces any of them."""
@@ -197,6 +204,8 @@ class FakeRobot:
             idle_action=self.idle_action,
             color_actions={"green": self.green_action, "blue": self.blue_action},
             red_action=self.red_action,
+            stop_motors=self.stop_motors,
+            release_camera=self.release_camera,
             clock=self.clock,
         )
         tasks.update(overrides)
@@ -258,6 +267,7 @@ def test_tasks_run_in_fixed_order_every_pass():
         ["startup_action"]
         + one_pass + ["green_action"]
         + one_pass + ["idle_action"]
+        + ["stop_motors", "release_camera"]
     )
 
 
@@ -300,7 +310,8 @@ def test_red_card_starts_a_turn_with_the_fake_clock_time():
     robot = FakeRobot(script=[RED])
     robot.run()
     assert robot.actions == ["red-start"]
-    _, state_passed_in, now = robot.calls[-1]
+    red_call = next(call for call in robot.calls if call[0] == "red_action")
+    _, state_passed_in, now = red_call
     assert state_passed_in == {"red_start": None, "red_rearm": True}
     # The fake clock's time on the first pass, not the real time.
     assert now == pytest.approx(FakeRobot.START_TIME + FRAME_DT)
@@ -339,3 +350,48 @@ def test_turn_ending_on_a_non_red_frame_still_needs_a_later_non_red_frame():
     robot = FakeRobot(script=[RED, IDLE, IDLE, IDLE, IDLE, RED, IDLE, RED])
     robot.run()
     assert robot.actions == TURN + ["idle", "idle", "red-start"]
+
+
+# -- shutdown: motors stop and camera is released on every exit path -----------
+
+def _raises(error):
+    """A fake task that raises `error`, whatever arguments it's called with."""
+    def task(*args):
+        raise error
+    return task
+
+
+def test_shutdown_runs_on_timeout():
+    robot = FakeRobot()
+    robot.run()
+    assert robot.names()[-2:] == ["stop_motors", "release_camera"]
+
+
+@pytest.mark.parametrize(
+    "failing_task, error",
+    [
+        ("capture_frame", KeyboardInterrupt()),           # Ctrl-C mid-run
+        ("color_locator", RuntimeError("vision broke")),  # a task crashes
+        ("red_action", ValueError("bad state")),          # crash mid red turn
+        ("startup_action", RuntimeError("I2C failed")),   # crash before the loop
+    ],
+)
+def test_shutdown_runs_when_a_task_raises(failing_task, error):
+    robot = FakeRobot(script=[RED, RED])
+
+    # The original error still reaches the caller...
+    with pytest.raises(type(error)):
+        robot.run(**{failing_task: _raises(error)})
+
+    # ...but only after the motors were stopped and the camera released,
+    # once each, in that order.
+    assert robot.names()[-2:] == ["stop_motors", "release_camera"]
+    assert robot.names().count("stop_motors") == 1
+    assert robot.names().count("release_camera") == 1
+
+
+def test_camera_is_released_even_if_stopping_the_motors_fails():
+    robot = FakeRobot(script=[IDLE])
+    with pytest.raises(OSError):
+        robot.run(stop_motors=_raises(OSError("I2C bus gone")))
+    assert robot.names()[-1] == "release_camera"

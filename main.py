@@ -49,6 +49,24 @@ def capture_frame() -> np.ndarray:
     raise NotImplementedError
 
 
+def stop_motors() -> None:
+    """Stop all wheels. Placeholder until motion/ provides a stop action.
+
+    TODO: replace with the motion layer's stop action (e.g. a ShutdownAction()
+    in motion/actions.py that calls mecanum.stop()). Agree on it with the
+    motion owner -- see "Known gap" in docs/task_contracts.md.
+    """
+    raise NotImplementedError
+
+
+def release_camera() -> None:
+    """Release the camera. Placeholder until the camera wrapper exists.
+
+    TODO: replace with the camera wrapper's release method.
+    """
+    raise NotImplementedError
+
+
 def main() -> None:
     # Red-turn sequence state. It's created once, here, and passed into the
     # loop. It only changes through RedAction's return value and the rearm rule.
@@ -63,6 +81,8 @@ def main() -> None:
         idle_action=IdleAction,
         color_actions=COLOR_ACTIONS,
         red_action=RedAction,
+        stop_motors=stop_motors,
+        release_camera=release_camera,
         clock=time.monotonic,
     )
 

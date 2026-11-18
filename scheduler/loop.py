@@ -73,9 +73,16 @@ def run_loop(
     idle_action: Callable[[], None],
     color_actions: Mapping[str, Callable[[Position], None]],
     red_action: Callable[[RedState, float], RedState],
+    stop_motors: Callable[[], None],
+    release_camera: Callable[[], None],
     clock: Callable[[], float] = time.monotonic,
 ) -> None:
     """Run StartupAction once, then the round-robin task loop until timeout.
+
+    However the run ends -- timeout, Ctrl-C (KeyboardInterrupt), or an
+    exception from any task, StartupAction included -- stop_motors() and then
+    release_camera() are called before this function returns or the exception
+    propagates, so the robot is never left driving.
 
     The task functions are passed in rather than imported, so this module
     never imports vision/ or motion/, and the caller decides which
@@ -90,6 +97,10 @@ def run_loop(
         idle_action: IdleAction().
         color_actions: maps "green"/"blue" to GreenAction/BlueAction.
         red_action: RedAction(state, now).
+        stop_motors: zero-arg callable that stops all wheels. Must be safe to
+            call when they're already stopped.
+        release_camera: zero-arg callable that frees the camera. Must be safe
+            to call more than once.
         clock: zero-arg callable returning monotonic seconds; every time
             reading in the loop goes through it. main() passes time.monotonic;
             tests pass a fake clock so timeouts happen instantly.
@@ -97,42 +108,51 @@ def run_loop(
     Returns:
         None
     """
-    startup_action()
+    try:
+        startup_action()
 
-    start_time = clock()
+        start_time = clock()
 
-    while True:
-        if TimerCheck(start_time, clock()):
-            break
+        while True:
+            if TimerCheck(start_time, clock()):
+                break
 
-        # Vision runs on every pass, even mid-turn, because the rearm rule
-        # needs the winning color.
-        frame = capture_frame()
-        color_counts = color_counter(frame)
-        winning_color, p_vector = color_locator(color_counts, frame)
+            # Vision runs on every pass, even mid-turn, because the rearm rule
+            # needs the winning color.
+            frame = capture_frame()
+            color_counts = color_counter(frame)
+            winning_color, p_vector = color_locator(color_counts, frame)
 
-        # Rearm before dispatching. If a turn finishes on this pass, RedAction's
-        # red_rearm = False then wins, so red can't start another turn until a
-        # later frame shows something other than red.
-        if winning_color != "red":
-            state["red_rearm"] = True
+            # Rearm before dispatching. If a turn finishes on this pass, RedAction's
+            # red_rearm = False then wins, so red can't start another turn until a
+            # later frame shows something other than red.
+            if winning_color != "red":
+                state["red_rearm"] = True
 
-        if state["red_start"] is not None:
-            # A red turn is in progress: keep going until it finishes,
-            # whatever vision says.
-            state = red_action(state, clock())
-        elif winning_color == "red":
-            if state["red_rearm"]:
-                state = red_action(state, clock())  # starts a new turn
-            else:
-                # Red is still in view right after a turn. Wait until it's rearmed.
+            if state["red_start"] is not None:
+                # A red turn is in progress: keep going until it finishes,
+                # whatever vision says.
+                state = red_action(state, clock())
+            elif winning_color == "red":
+                if state["red_rearm"]:
+                    state = red_action(state, clock())  # starts a new turn
+                else:
+                    # Red is still in view right after a turn. Wait until it's rearmed.
+                    idle_action()
+            elif winning_color is None:
                 idle_action()
-        elif winning_color is None:
-            idle_action()
-        elif winning_color in color_actions:
-            color_actions[winning_color](p_vector)
-        else:
-            # Defensive fallback (intended behavior): a color name with no
-            # action means the locator broke its contract. Don't move; idle
-            # instead of crashing mid-run.
-            idle_action()
+            elif winning_color in color_actions:
+                color_actions[winning_color](p_vector)
+            else:
+                # Defensive fallback (intended behavior): a color name with no
+                # action means the locator broke its contract. Don't move; idle
+                # instead of crashing mid-run.
+                idle_action()
+    finally:
+        # Motors first: they're the safety-critical step. The nested
+        # try/finally makes sure the camera is still released even if
+        # stopping the motors raises.
+        try:
+            stop_motors()
+        finally:
+            release_camera()
