@@ -8,16 +8,31 @@ usage details will be filled in as the implementation lands.
 
 ## Status
 
-Structure and interface stubs only. See [docs/task_contracts.md](docs/task_contracts.md)
-for the function signatures each module must implement.
+- **Done:** the scheduler (`scheduler/`) and the `main.py` wiring, including
+  `--dry-run` and safe shutdown.
+- **Still stubs:** `vision/` and `motion/`.
+- **Still needed:** a motion stop action (`ShutdownAction`). Without it, a
+  real run can't stop the wheels on exit, so **don't run `main.py` on the
+  robot without `--dry-run` until it exists.** See "Shutdown" in the contract.
+
+See [docs/task_contracts.md](docs/task_contracts.md) for the function
+signatures each module must implement.
 
 ## Project Structure
 
 - `config.py` — every shared constant (HSV color ranges, image size, thresholds,
   timeout, motion speeds and timing). Modules import these from here; nothing
   hardcodes them.
-- `scheduler/` — the round-robin loop and timer/safety cutoff logic (`TimerCheck`,
-  `round_robin`). No hardware or vision code lives here.
+- `scheduler/` — the scheduler side of the project:
+  - `loop.py`: the round-robin loop (`run_loop`), the timer/safety cutoff
+    (`TimerCheck`) and `round_robin`. It imports nothing from `vision/` or
+    `motion/`; every task is passed in.
+  - `camera.py`: the frame sources (`Camera` for a live camera, `StaticImage`
+    for an image file). This is the only place the camera is opened.
+  - `dry_run.py`: stand-in motion actions that print instead of driving the
+    motors (`--dry-run`).
+- `main.py` — the entry point. It parses the command line, picks the real or
+  dry-run actions and the frame source, and hands them to `run_loop`.
 - `vision/` — color counting and localization from camera frames (`ColorCounter`,
   `ColorLocator`). Pure functions over image arrays — no camera or hardware calls.
 - `motion/` — robot actions and low-level mecanum wheel control. `motion/actions.py`
@@ -63,9 +78,12 @@ don't just change the signature.
   `tests/sample_images/` — no robot required.
 - Motion code (`motion/`) requires the actual robot to verify end-to-end; budget
   hardware time accordingly and coordinate access with the team.
+- Scheduler code (`scheduler/`) is tested with fake tasks and a fake clock, so
+  no hardware is needed and no test waits for the real timeout.
 - Install the dev dependencies first (`pip install -r requirements-dev.txt`;
   this also installs the runtime ones), then run `pytest tests/` from the repo
   root.
+- To exercise the whole loop without the robot, use `--dry-run` (see below).
 
 ## Local Setup / Running on the Robot
 
@@ -91,6 +109,26 @@ don't just change the signature.
    ```
    python main.py
    ```
+
+### Command-line options
+
+```
+python main.py                                    # on the robot
+python main.py --dry-run                          # laptop webcam, no motors
+python main.py --dry-run --image path/to.png      # static image, no motors
+python main.py --dry-run --image path/to.png --timeout 3
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--dry-run` | off | Print each action instead of driving the motors. `motion/` and the motor library are never imported, so this works on any machine. |
+| `--image PATH` | live camera | Use this image as every frame. |
+| `--camera INDEX` | `config.CAMERA_INDEX` | Camera device index. |
+| `--timeout SECONDS` | `config.TIMEOUT_SECONDS` | Safety cutoff, for shorter test runs. |
+
+The motors stop and the camera is released however the run ends: timeout,
+Ctrl-C (exit code 130), or an error. A dry run needs the vision code, so it
+fails at `ColorCounter` until `vision/` is merged.
 
 **TODO:** fill in Pi-specific setup steps still needed — enabling I2C,
 camera/USB permissions, and installing the Yahboom motor library on-device.
