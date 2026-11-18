@@ -9,6 +9,7 @@ values -- never through globals.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 
 import numpy as np
@@ -62,6 +63,7 @@ def main() -> None:
         idle_action=IdleAction,
         color_actions=COLOR_ACTIONS,
         red_action=RedAction,
+        clock=time.monotonic,
     )
 
 
