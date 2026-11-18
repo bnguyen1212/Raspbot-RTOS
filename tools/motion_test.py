@@ -40,7 +40,7 @@ from config import MAX_SPEED, ROTATE_SPEED, STRAFE_SPEED  # noqa: E402
 from motion.driver import FakeMotorDriver  # noqa: E402
 from motion.kinematics import WheelSpeeds, rotate_in_place, strafe, wheel_speeds  # noqa: E402
 from motion.mecanum import to_library_speed  # noqa: E402
-from motion.stop_on_signal import install_stop_handlers  # noqa: E402
+from scheduler.signals import install_stop_handlers  # noqa: E402
 
 DEFAULT_DURATION_S = 1.5
 MAX_DURATION_S = 5.0  # refuse longer --duration values, in case of a typo
@@ -294,7 +294,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"motion_test: cannot load the motor driver: {err}", file=sys.stderr)
         print("On a laptop, use --dry-run.", file=sys.stderr)
         return 1
-    install_stop_handlers(driver)
+    install_stop_handlers(driver.stop)
 
     if args.dry_run:
         print("DRY RUN: FakeMotorDriver. Nothing will move.")

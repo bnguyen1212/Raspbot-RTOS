@@ -7,9 +7,11 @@ this process having imported it already.
 
 from __future__ import annotations
 
+import signal
 import subprocess
 import sys
 import textwrap
+import time
 from pathlib import Path
 
 import cv2
@@ -17,7 +19,15 @@ import numpy as np
 import pytest
 
 import main
-from config import CAMERA_INDEX, IMAGE_HEIGHT, IMAGE_WIDTH, SECONDS_PER_180, TIMEOUT_SECONDS
+from config import (
+    CAMERA_BUFFER_SIZE,
+    CAMERA_FLUSH_FRAMES,
+    CAMERA_INDEX,
+    IMAGE_HEIGHT,
+    IMAGE_WIDTH,
+    SECONDS_PER_180,
+    TIMEOUT_SECONDS,
+)
 from scheduler import camera as camera_module
 from scheduler.camera import Camera, StaticImage
 from scheduler.dry_run import DryRunMotion
@@ -125,19 +135,173 @@ def test_dry_run_wiring(card_image):
     assert tasks["timeout"] == 2.0
     assert tasks["capture_frame"]().shape == (IMAGE_HEIGHT, IMAGE_WIDTH, 3)
     # Every motion task is a DryRunMotion method, not a motion/ function.
-    for name in ("startup_action", "idle_action", "red_action", "stop_motors"):
+    # (startup_action is wrapped with the camera flush; see below.)
+    for name in ("idle_action", "red_action", "stop_motors"):
         assert isinstance(tasks[name].__self__, DryRunMotion)
 
 
-def test_real_mode_wiring_uses_motion_actions(card_image):
+def test_real_mode_wiring_uses_motion_actions(card_image, monkeypatch):
     from motion import actions
 
+    started = []
+    monkeypatch.setattr(actions, "StartupAction", lambda: started.append("StartupAction"))
     tasks = main.build_tasks(main.parse_args(["--image", card_image]))
-    assert tasks["startup_action"] is actions.StartupAction
+    tasks["startup_action"]()
+    assert started == ["StartupAction"]  # wrapped with the flush, still the real action
     assert tasks["idle_action"] is actions.IdleAction
     assert tasks["red_action"] is actions.RedAction
     assert tasks["stop_motors"] is actions.ShutdownAction
     assert tasks["color_actions"] == {"green": actions.GreenAction, "blue": actions.BlueAction}
+
+
+def test_startup_then_flush_runs_the_startup_first():
+    order = []
+    startup = main.startup_then_flush(lambda: order.append("startup"), lambda: order.append("flush"))
+    assert order == []  # nothing runs until run_loop calls it
+    startup()
+    assert order == ["startup", "flush"]
+
+
+def test_startup_failure_skips_the_flush():
+    flushed = []
+
+    def broken_startup():
+        raise RuntimeError("motor init failed")
+
+    with pytest.raises(RuntimeError):
+        main.startup_then_flush(broken_startup, lambda: flushed.append(True))()
+    assert flushed == []
+
+
+def test_live_camera_wiring_flushes_after_startup(monkeypatch):
+    """With a live camera, build_tasks opens it with the configured buffer size,
+    and its startup_action runs the startup and then the flush."""
+    events = []
+
+    class RecordingCamera:
+        def __init__(self, index, width, height, *, buffer_size=None):
+            events.append(("open", index, width, height, buffer_size))
+
+        def delivered_size(self):
+            return IMAGE_WIDTH, IMAGE_HEIGHT
+
+        def flush(self, frames):
+            events.append(("flush", frames))
+
+        def read(self):
+            return np.zeros((IMAGE_HEIGHT, IMAGE_WIDTH, 3), dtype=np.uint8)
+
+        def release(self):
+            events.append(("release",))
+
+    monkeypatch.setattr(main, "Camera", RecordingCamera)
+    tasks = main.build_tasks(main.parse_args(["--dry-run", "--camera", "3"]))
+    assert events == [("open", 3, IMAGE_WIDTH, IMAGE_HEIGHT, CAMERA_BUFFER_SIZE)]
+
+    tasks["startup_action"]()
+    assert events[-1] == ("flush", CAMERA_FLUSH_FRAMES)
+
+
+@pytest.mark.parametrize(
+    "size, warns",
+    [((IMAGE_WIDTH, IMAGE_HEIGHT), False), ((1280, 720), True)],
+)
+def test_report_camera_warns_only_on_a_size_mismatch(capsys, size, warns):
+    class SizedCamera:
+        def delivered_size(self):
+            return size
+
+    main.report_camera(SizedCamera(), 0)  # type: ignore[arg-type]
+    out = capsys.readouterr()
+    assert f"delivering {size[0]}x{size[1]}" in out.out
+    assert ("WARNING" in out.err) is warns
+
+
+def test_report_camera_when_the_backend_reports_no_size(capsys):
+    class UnsizedCamera:
+        def delivered_size(self):
+            return 0, 0
+
+    main.report_camera(UnsizedCamera(), 0)  # type: ignore[arg-type]
+    out = capsys.readouterr()
+    assert "doesn't report" in out.out
+    assert out.err == ""
+
+
+# ---------------------------------------------------------------------------
+# Signals
+# ---------------------------------------------------------------------------
+
+def recording_signal_helpers(monkeypatch):
+    """Replace main's signal helpers with recorders; nothing is really installed."""
+    calls = []
+
+    def install(stop, *, release=None, write=print):
+        calls.append(("install", stop, release))
+        return {"previous": True}
+
+    monkeypatch.setattr(main, "install_stop_handlers", install)
+    monkeypatch.setattr(main, "restore_handlers", lambda previous: calls.append(("restore", previous)))
+    return calls
+
+
+@pytest.mark.parametrize("outcome", ["timeout", "error"])
+def test_main_installs_stop_handlers_around_the_loop(monkeypatch, card_image, outcome):
+    calls = recording_signal_helpers(monkeypatch)
+
+    def fake_run_loop(state, **tasks):
+        # The handlers are in place before the loop (and StartupAction) runs,
+        # with the run's own stop_motors and release_camera.
+        assert calls == [("install", tasks["stop_motors"], tasks["release_camera"])]
+        if outcome == "error":
+            raise RuntimeError("camera read failed")
+
+    monkeypatch.setattr(main, "run_loop", fake_run_loop)
+    if outcome == "error":
+        with pytest.raises(RuntimeError):
+            main.main(["--dry-run", "--image", card_image])
+    else:
+        main.main(["--dry-run", "--image", card_image])
+    assert calls[-1] == ("restore", {"previous": True})
+
+
+def test_main_leaves_the_signal_handlers_as_it_found_them(monkeypatch, card_image):
+    from scheduler.signals import STOP_SIGNALS
+
+    before = {sig: signal.getsignal(sig) for sig in STOP_SIGNALS}
+    seen_during = {}
+
+    def fake_run_loop(state, **tasks):
+        seen_during.update({sig: signal.getsignal(sig) for sig in STOP_SIGNALS})
+
+    monkeypatch.setattr(main, "run_loop", fake_run_loop)
+    main.main(["--dry-run", "--image", card_image])
+    assert all(seen_during[sig] is not before[sig] for sig in STOP_SIGNALS)
+    assert {sig: signal.getsignal(sig) for sig in STOP_SIGNALS} == before
+
+
+@pytest.mark.skipif(not hasattr(signal, "SIGHUP"), reason="needs POSIX signals (runs on the Pi)")
+@pytest.mark.parametrize("sig", ["SIGTERM", "SIGHUP", "SIGINT"])
+def test_real_signal_stops_a_dry_run_loop_and_exits(card_image, sig):
+    """Send a real signal to main.py --dry-run while its loop is running."""
+    proc = subprocess.Popen(
+        [sys.executable, "-u", "main.py", "--dry-run", "--image", card_image, "--timeout", "30"],
+        cwd=REPO_ROOT, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, text=True,
+    )
+    try:
+        assert proc.stdout is not None
+        while "StartupAction" not in proc.stdout.readline():  # wait until it's running
+            pass
+        time.sleep(0.5)  # let it get into the loop
+        proc.send_signal(getattr(signal, sig))
+        out, _ = proc.communicate(timeout=10)
+    finally:
+        proc.kill()
+    assert proc.returncode == 128 + getattr(signal, sig)
+    assert "stop_motors: motors stopped" in out
+    assert f"{sig}: stop sent" in out
+    assert "Timeout reached" not in out
 
 
 def test_ctrl_c_exits_with_code_130(monkeypatch, card_image):
@@ -209,10 +373,14 @@ def test_static_image_missing_file(tmp_path):
 class FakeVideoCapture:
     """Stands in for cv2.VideoCapture, so no webcam is needed."""
 
-    def __init__(self, index, opened=True, frames=()):
+    def __init__(self, index, api=None, opened=True, frames=(), grabs=None, size=(640, 480)):
         self.index = index
+        self.api = api
         self.opened = opened
         self.frames = list(frames)
+        self.grabs_left = grabs  # None: grab() always succeeds
+        self.grab_count = 0
+        self.size = size
         self.settings = {}
         self.release_count = 0
 
@@ -221,6 +389,18 @@ class FakeVideoCapture:
 
     def set(self, prop, value):
         self.settings[prop] = value
+
+    def get(self, prop):
+        sizes = {cv2.CAP_PROP_FRAME_WIDTH: self.size[0], cv2.CAP_PROP_FRAME_HEIGHT: self.size[1]}
+        return float(sizes.get(prop, 0))
+
+    def grab(self):
+        if self.grabs_left is not None:
+            if self.grabs_left == 0:
+                return False
+            self.grabs_left -= 1
+        self.grab_count += 1
+        return True
 
     def read(self):
         if not self.frames:
@@ -234,8 +414,8 @@ class FakeVideoCapture:
 def test_camera_opens_device_resizes_frames_and_releases(monkeypatch):
     opened = []
 
-    def fake_video_capture(index):
-        capture = FakeVideoCapture(index, frames=[np.zeros((720, 1280, 3), dtype=np.uint8)])
+    def fake_video_capture(index, api):
+        capture = FakeVideoCapture(index, api, frames=[np.zeros((720, 1280, 3), dtype=np.uint8)])
         opened.append(capture)
         return capture
 
@@ -246,6 +426,7 @@ def test_camera_opens_device_resizes_frames_and_releases(monkeypatch):
     assert capture.index == 2
     assert capture.settings[cv2.CAP_PROP_FRAME_WIDTH] == IMAGE_WIDTH
     assert capture.settings[cv2.CAP_PROP_FRAME_HEIGHT] == IMAGE_HEIGHT
+    assert cv2.CAP_PROP_BUFFERSIZE not in capture.settings  # left alone unless asked
 
     assert cam.read().shape == (IMAGE_HEIGHT, IMAGE_WIDTH, 3)  # 1280x720 resized
 
@@ -259,7 +440,8 @@ def test_camera_opens_device_resizes_frames_and_releases(monkeypatch):
 def test_camera_read_raw_returns_frame_unresized(monkeypatch):
     frame = np.zeros((720, 1280, 3), dtype=np.uint8)
     monkeypatch.setattr(
-        camera_module.cv2, "VideoCapture", lambda index: FakeVideoCapture(index, frames=[frame])
+        camera_module.cv2, "VideoCapture",
+        lambda index, api: FakeVideoCapture(index, api, frames=[frame]),
     )
     cam = Camera(0, IMAGE_WIDTH, IMAGE_HEIGHT)
     assert cam.read_raw().shape == (720, 1280, 3)
@@ -269,7 +451,66 @@ def test_camera_read_raw_returns_frame_unresized(monkeypatch):
 
 def test_camera_that_cannot_open_raises(monkeypatch):
     monkeypatch.setattr(
-        camera_module.cv2, "VideoCapture", lambda index: FakeVideoCapture(index, opened=False)
+        camera_module.cv2, "VideoCapture",
+        lambda index, api: FakeVideoCapture(index, api, opened=False),
     )
     with pytest.raises(RuntimeError, match="could not open camera"):
         Camera(0, IMAGE_WIDTH, IMAGE_HEIGHT)
+
+
+def install_fake_capture(monkeypatch, **kwargs) -> list[FakeVideoCapture]:
+    opened: list[FakeVideoCapture] = []
+
+    def fake_video_capture(index, api):
+        capture = FakeVideoCapture(index, api, **kwargs)
+        opened.append(capture)
+        return capture
+
+    monkeypatch.setattr(camera_module.cv2, "VideoCapture", fake_video_capture)
+    return opened
+
+
+@pytest.mark.parametrize(
+    "platform, api",
+    [("linux", cv2.CAP_V4L2), ("win32", cv2.CAP_ANY), ("darwin", cv2.CAP_ANY)],
+)
+def test_camera_uses_v4l2_on_linux_only(monkeypatch, platform, api):
+    monkeypatch.setattr(camera_module.sys, "platform", platform)
+    opened = install_fake_capture(monkeypatch)
+    Camera(0, IMAGE_WIDTH, IMAGE_HEIGHT)
+    assert opened[0].api == api
+
+
+def test_camera_requests_the_buffer_size(monkeypatch):
+    opened = install_fake_capture(monkeypatch)
+    Camera(0, IMAGE_WIDTH, IMAGE_HEIGHT, buffer_size=1)
+    assert opened[0].settings[cv2.CAP_PROP_BUFFERSIZE] == 1
+
+
+def test_camera_reports_the_delivered_size(monkeypatch):
+    install_fake_capture(monkeypatch, size=(1280, 720))
+    assert Camera(0, IMAGE_WIDTH, IMAGE_HEIGHT).delivered_size() == (1280, 720)
+
+
+def test_camera_flush_grabs_without_decoding(monkeypatch):
+    opened = install_fake_capture(monkeypatch, frames=[np.zeros((480, 640, 3), dtype=np.uint8)])
+    cam = Camera(0, IMAGE_WIDTH, IMAGE_HEIGHT)
+    cam.flush(15)
+    assert opened[0].grab_count == 15
+    assert len(opened[0].frames) == 1  # read() was never called
+    cam.flush(0)
+    assert opened[0].grab_count == 15
+
+
+def test_camera_flush_raises_when_frames_stop(monkeypatch):
+    install_fake_capture(monkeypatch, grabs=3)
+    cam = Camera(0, IMAGE_WIDTH, IMAGE_HEIGHT)
+    with pytest.raises(RuntimeError, match="flushing"):
+        cam.flush(15)
+
+
+def test_static_image_flush_does_nothing(card_image):
+    source = StaticImage(card_image, IMAGE_WIDTH, IMAGE_HEIGHT)
+    before = source.read()
+    source.flush(15)
+    assert np.array_equal(source.read(), before)

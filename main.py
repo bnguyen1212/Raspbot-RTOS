@@ -12,6 +12,11 @@ winning_color, p_vector, the red-turn state) is passed as arguments/return
 values -- never through globals.
 
 In --dry-run, motion/ is never imported, so neither is the motor library.
+
+Ctrl-C (SIGINT), `kill` (SIGTERM) and the SSH session closing (SIGHUP) all
+stop the motors from a signal handler (scheduler.signals) and exit with
+128 + the signal number. A timeout or an error stops them through
+run_loop's finally block.
 """
 
 from __future__ import annotations
@@ -23,6 +28,8 @@ from collections.abc import Callable
 from typing import Any
 
 from config import (
+    CAMERA_BUFFER_SIZE,
+    CAMERA_FLUSH_FRAMES,
     CAMERA_INDEX,
     IMAGE_HEIGHT,
     IMAGE_WIDTH,
@@ -34,6 +41,7 @@ from config import (
 from scheduler.camera import Camera, StaticImage
 from scheduler.dry_run import DryRunMotion
 from scheduler.loop import run_loop
+from scheduler.signals import install_stop_handlers, restore_handlers
 from vision.color_counter import ColorCounter
 from vision.color_locator import ColorLocator
 
@@ -124,6 +132,45 @@ def motion_tasks(dry_run: bool) -> dict[str, Any]:
     }
 
 
+def report_camera(camera: Camera, index: int) -> None:
+    """Print the frame size the camera delivers once, and warn on a mismatch.
+
+    read() resizes every frame to IMAGE_WIDTH x IMAGE_HEIGHT anyway, but a
+    different native size (especially another aspect ratio) changes pixel
+    counts and positions, so the vision thresholds may need retuning.
+    """
+    width, height = camera.delivered_size()
+    if (width, height) == (0, 0):
+        print(f"Camera {index}: the backend doesn't report its frame size.")
+        return
+    print(f"Camera {index}: delivering {width}x{height}.")
+    if (width, height) != (IMAGE_WIDTH, IMAGE_HEIGHT):
+        print(
+            f"WARNING: config.py expects {IMAGE_WIDTH}x{IMAGE_HEIGHT}, but camera {index} "
+            f"delivers {width}x{height}. Frames are resized, so pixel counts and "
+            "positions differ from the tuned values.",
+            file=sys.stderr,
+        )
+
+
+def startup_then_flush(
+    startup_action: Callable[[], None], flush_camera: Callable[[], None]
+) -> Callable[[], None]:
+    """Wrap startup_action so the camera is flushed right after it.
+
+    run_loop calls the result as its startup_action, so the flush happens
+    after the startup spin and before run_loop takes start_time: the first
+    frame the loop processes is fresh, and the flush isn't counted against
+    the timeout.
+    """
+
+    def startup() -> None:
+        startup_action()
+        flush_camera()
+
+    return startup
+
+
 def build_tasks(args: argparse.Namespace) -> dict[str, Any]:
     """Assemble every run_loop keyword argument for this run.
 
@@ -135,6 +182,8 @@ def build_tasks(args: argparse.Namespace) -> dict[str, Any]:
 
     Returns:
         dict of keyword arguments for run_loop (everything except `state`).
+        Its startup_action is the chosen startup action followed by a
+        camera flush (see startup_then_flush).
     """
     tasks = motion_tasks(args.dry_run)
 
@@ -147,12 +196,17 @@ def build_tasks(args: argparse.Namespace) -> dict[str, Any]:
         "color_actions keys plus 'red' must match config.TRACKED_COLORS"
     )
 
+    source: Camera | StaticImage
     if args.image:
         source = StaticImage(args.image, IMAGE_WIDTH, IMAGE_HEIGHT)
     else:
-        source = Camera(args.camera, IMAGE_WIDTH, IMAGE_HEIGHT)
+        source = Camera(args.camera, IMAGE_WIDTH, IMAGE_HEIGHT, buffer_size=CAMERA_BUFFER_SIZE)
+        report_camera(source, args.camera)
 
     tasks.update(
+        startup_action=startup_then_flush(
+            tasks["startup_action"], lambda: source.flush(CAMERA_FLUSH_FRAMES)
+        ),
         capture_frame=source.read,
         release_camera=source.release,
         color_counter=ColorCounter,
@@ -169,8 +223,13 @@ def main(argv: list[str] | None = None) -> None:
     Args:
         argv: list[str] | None, command-line arguments (None: sys.argv[1:]).
 
+    Exits the process with 128 + the signal number on SIGINT (130), SIGTERM
+    or SIGHUP, after the signal handler has stopped the motors and released
+    the camera.
+
     Raises:
-        SystemExit: with code 130 on Ctrl-C, after the motors are stopped.
+        SystemExit: with code 130 if a KeyboardInterrupt still reaches here
+            (see below), after the motors are stopped.
     """
     args = parse_args(argv)
     tasks = build_tasks(args)
@@ -179,13 +238,25 @@ def main(argv: list[str] | None = None) -> None:
     # loop. It only changes through RedAction's return value and the rearm rule.
     state: RedState = {"red_start": None, "red_rearm": True}
 
+    # Installed before the loop (and so before StartupAction drives the
+    # wheels). The handler stops the motors itself and exits with os._exit,
+    # so a signal can't be swallowed by Raspbot_Lib's bare `except:`, can't
+    # cut run_loop's own stop short, and SIGTERM/SIGHUP no longer end the
+    # process with the wheels still running.
+    previous_handlers = install_stop_handlers(
+        tasks["stop_motors"], release=tasks["release_camera"]
+    )
     try:
         run_loop(state, **tasks)
     except KeyboardInterrupt:
-        # run_loop's finally block has already stopped the motors and
-        # released the camera by the time we get here.
+        # With the handler installed, Ctrl-C doesn't raise KeyboardInterrupt.
+        # This only catches one raised some other way. run_loop's finally
+        # block has already stopped the motors and released the camera.
         print("Interrupted: motors stopped, camera released.", file=sys.stderr)
         raise SystemExit(130) from None
+    finally:
+        # The motors are stopped by now, so the defaults are safe again.
+        restore_handlers(previous_handlers)
     print("Timeout reached: motors stopped, camera released.")
 
 

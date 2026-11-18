@@ -92,8 +92,25 @@ IMAGE_CENTER_X = IMAGE_WIDTH // 2  # 320
 
 # cv2.VideoCapture device index for the USB camera (scheduler.camera.Camera).
 # 0 is usually the built-in webcam on a laptop. main.py --camera overrides it.
-# TODO: confirm the robot's index during integration.
+# TODO: confirm the robot's index during integration (`v4l2-ctl --list-devices`).
 CAMERA_INDEX = 0
+
+# How many frames the camera driver may queue (cv2.CAP_PROP_BUFFERSIZE). With
+# 1, each read returns the newest frame instead of one that waited in the
+# queue while the loop was busy. That keeps the robot from acting on old
+# images, but it can lower the loop rate, because each read may wait for the
+# next frame. Not every backend honors it (V4L2 does). main.py passes it to
+# scheduler.camera.Camera.
+# TODO: confirm on the robot. If the loop rate drops noticeably, try 2.
+CAMERA_BUFFER_SIZE = 1
+
+# Frames Camera.flush() throws away after StartupAction's spin and before the
+# loop's start_time, so the first frames the loop sees are fresh and taken
+# with auto-exposure and white balance already settled. Matches the flush in
+# tools/capture_samples.py. Costs about half a second at 30 fps, which isn't
+# counted against TIMEOUT_SECONDS.
+# TODO: confirm on the robot.
+CAMERA_FLUSH_FRAMES = 15
 
 # What ColorLocator returns when no tracked color is detected. It has the same
 # (winning_color, position) shape as a detection, so callers can always unpack

@@ -14,7 +14,7 @@ kinematics.rotate_in_place, the same path StartupAction and RedAction use,
 with the same driver (motion.driver.default_driver()). Only the duration,
 direction and speed come from the command line.
 
-Ctrl-C, SIGTERM and SIGHUP stop the wheels and exit (motion.stop_on_signal).
+Ctrl-C, SIGTERM and SIGHUP stop the wheels and exit (scheduler.signals).
 Each spin also runs inside `with driver:`, so it ends with stop() however it
 ends.
 
@@ -41,7 +41,7 @@ from motion.actions import TIMED_TURN_DIRECTION, timed_spin  # noqa: E402
 from motion.driver import FakeMotorDriver, MotorDriver, default_driver  # noqa: E402
 from motion.kinematics import RotationDirection  # noqa: E402
 from motion.mecanum import to_library_speed  # noqa: E402
-from motion.stop_on_signal import install_stop_handlers  # noqa: E402
+from scheduler.signals import install_stop_handlers  # noqa: E402
 
 MAX_SECONDS = 30.0  # refuse longer spins, in case of a typo
 SETTLE_S = 1.0      # pause after each stop so the robot comes to rest
@@ -253,7 +253,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"spin_calibration: cannot load the motor driver: {err}", file=sys.stderr)
         print("On a laptop, use --dry-run.", file=sys.stderr)
         return 1
-    install_stop_handlers(driver)
+    install_stop_handlers(driver.stop)
 
     print("DRY RUN: FakeMotorDriver. Nothing will move." if args.dry_run
           else "REAL MOTORS. Clear space around the robot.")

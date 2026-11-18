@@ -44,7 +44,9 @@ nothing from the project, so it can't create a circular import. Values marked
 | `IMAGE_WIDTH` | `int` | `640` | Frame width that `capture_frame()` must return. |
 | `IMAGE_HEIGHT` | `int` | `480` | Frame height that `capture_frame()` must return. |
 | `IMAGE_CENTER_X` | `int` | `320` | `IMAGE_WIDTH // 2` |
-| `CAMERA_INDEX` | `int` | `0` | `cv2.VideoCapture` device index for the USB camera. `main.py --camera` overrides it. **TODO: confirm on the robot.** |
+| `CAMERA_INDEX` | `int` | `0` | `cv2.VideoCapture` device index for the USB camera. `main.py --camera` overrides it. **TODO: confirm on the robot** (`v4l2-ctl --list-devices`). |
+| `CAMERA_BUFFER_SIZE` | `int` | `1` | Frames the camera driver may queue (`cv2.CAP_PROP_BUFFERSIZE`), passed to `Camera` by `main.py`. With 1, each read returns the newest frame, not one that waited while the loop was busy. It can lower the loop rate, because each read may wait for the next frame. **TODO: confirm on the robot; try 2 if the loop slows noticeably.** |
+| `CAMERA_FLUSH_FRAMES` | `int` | `15` | Frames `Camera.flush()` throws away after `StartupAction` and before `start_time`. Same count as `tools/capture_samples.py`. **TODO: confirm on the robot.** |
 | `IDLE_SENTINEL` | `tuple[None, None]` | `(None, None)` | What `ColorLocator` returns when idle. See [Idle value](#idle-value). |
 | `CENTER_DEADBAND_PX` | `int` | `40` | A target is "centered" when `abs(x - IMAGE_CENTER_X) <= CENTER_DEADBAND_PX`. **TODO: tune.** |
 | `TIMEOUT_SECONDS` | `float` | `20.0` | Safety cutoff. `TimerCheck` compares `time.monotonic()` readings against it. |
@@ -127,9 +129,13 @@ Steps 1 and 2 run in this order.
 
 ## Shutdown
 
-`run_loop` runs `StartupAction` and the whole loop inside `try/finally`.
-However the run ends (timeout, Ctrl-C, or an exception from any task,
-`StartupAction` included), the `finally` block calls, in this order:
+There are two paths. Both call the same `stop_motors` first and the same
+`release_camera` second.
+
+**Timeout or exception.** `run_loop` runs `StartupAction` and the whole loop
+inside `try/finally`. However the loop ends (timeout, or an exception from
+any task, `StartupAction` included), the `finally` block calls, in this
+order:
 
 1. `stop_motors()` — the safety-critical step, so it goes first.
 2. `release_camera()` — inside a nested `finally`, so the camera is released
@@ -138,9 +144,30 @@ However the run ends (timeout, Ctrl-C, or an exception from any task,
 Then the exception, if there was one, propagates. This covers a timeout in the
 middle of a red turn: the wheels are stopped before `main()` returns.
 
+**Signals (SIGINT/Ctrl-C, SIGTERM, SIGHUP).** `main()` installs
+[`scheduler.signals`](#schedulersignalspy) handlers before calling `run_loop`,
+so before `StartupAction` drives the wheels. The handler calls `stop_motors()`
+and `release_camera()` itself, then exits the process with
+`os._exit(128 + signum)` (130, 143, 129). `run_loop`'s `finally` doesn't run
+on this path, and doesn't need to. Handling signals this way covers three
+gaps that `try/finally` alone leaves:
+
+- SIGTERM and SIGHUP end a Python process by default without running any
+  `finally`, and the motor board has no watchdog, so the wheels would keep
+  the last command.
+- A `KeyboardInterrupt` raised while Raspbot_Lib is writing to a motor is
+  swallowed by its bare `except:`.
+- A second Ctrl-C during the `finally` block's `stop_motors()` could cut that
+  stop short.
+
+`main()` restores the previous handlers once `run_loop` has returned or
+raised (by then the motors are stopped). SIGKILL can't be handled: use
+[tools/emergency_stop.py](#toolsemergency_stoppy).
+
 In a real run, `stop_motors` is
 [`motion.actions.ShutdownAction`](#shutdownaction-drivernone---none). In a
-`--dry-run` it's `DryRunMotion.stop_motors`.
+`--dry-run` it's `DryRunMotion.stop_motors`. Both must be safe to call at any
+point, including from the signal handler while a pass is partway through.
 
 ## scheduler/loop.py
 
@@ -174,7 +201,7 @@ Every argument after `state` is keyword-only:
 | Argument | Type | Robot value (`main.py`) |
 |---|---|---|
 | `state` | `RedState` | `{"red_start": None, "red_rearm": True}` |
-| `startup_action` | `Callable[[], None]` | `StartupAction` |
+| `startup_action` | `Callable[[], None]` | `StartupAction`, then the frame source's `flush(CAMERA_FLUSH_FRAMES)` (see [main.py](#mainpy)) |
 | `capture_frame` | `Callable[[], np.ndarray]` | the frame source's `read` (see [scheduler/camera.py](#schedulercamerapy)) |
 | `color_counter` | `Callable[[np.ndarray], dict[str, int]]` | `ColorCounter` |
 | `color_locator` | `Callable[[dict[str, int], np.ndarray], tuple[str, Position] \| tuple[None, None]]` | `ColorLocator` |
@@ -211,25 +238,39 @@ nothing from `vision/` or `motion/`. Both classes have the same interface:
   before it's returned. `main.py` passes this as `capture_frame`.
 - `release() -> None` — frees the source. Safe to call more than once.
   `main.py` passes this as `release_camera`.
+- `flush(frames: int) -> None` — throws away stale frames. `main.py` calls
+  it after `StartupAction` and before `run_loop` takes `start_time` (see
+  [main.py](#mainpy)).
 
 The open device is held on the object, which is how `capture_frame` takes no
 arguments without needing a global.
 
-### `Camera(index: int, width: int, height: int)`
-- A live `cv2.VideoCapture(index)` device: the robot's USB camera, or a laptop
-  webcam during `--dry-run`. `main.py` passes `config.CAMERA_INDEX` (or
-  `--camera`), `config.IMAGE_WIDTH` and `config.IMAGE_HEIGHT`.
-- **Raises** `RuntimeError` if the device can't be opened, and from `read()`
-  if the camera returns no frame (for example, it was unplugged).
-- **TODO:** camera warm-up is not done yet. It used to belong to
-  `StartupAction`. The camera is opened before `StartupAction`'s blocking spin,
-  so the first frames the loop reads may be stale ones buffered during the
-  spin. Flushing them before `start_time` is taken is still open.
+### `Camera(index: int, width: int, height: int, *, buffer_size: int | None = None)`
+- A live `cv2.VideoCapture(index, api)` device: the robot's USB camera, or a
+  laptop webcam during `--dry-run`. `api` is `cv2.CAP_V4L2` on Linux, so the
+  backend doesn't depend on how OpenCV was built, and `cv2.CAP_ANY` elsewhere.
+  `main.py` passes `config.CAMERA_INDEX` (or `--camera`), `config.IMAGE_WIDTH`,
+  `config.IMAGE_HEIGHT` and `buffer_size=config.CAMERA_BUFFER_SIZE`.
+- The width, height and `buffer_size` (`cv2.CAP_PROP_BUFFERSIZE`) are only
+  requests. Not every camera or backend honors them, which is why `read()`
+  resizes. `buffer_size=None` leaves the driver's default.
+- `delivered_size() -> tuple[int, int]` — the `(width, height)` the device
+  reports it delivers, before `read()` resizes. `(0, 0)` if the backend
+  doesn't report it. `main.py` prints it once, and warns if it isn't
+  `IMAGE_WIDTH` x `IMAGE_HEIGHT`.
+- `flush(frames)` calls `grab()` `frames` times without decoding. That drops
+  any frames the driver queued and gives auto-exposure and white balance time
+  to settle.
+- `read_raw() -> np.ndarray` — one frame at the size the device delivers, not
+  resized (used by `tools/capture_samples.py`).
+- **Raises** `RuntimeError` if the device can't be opened, and from `read()`,
+  `read_raw()` and `flush()` if the camera returns no frame (for example, it
+  was unplugged).
 
 ### `StaticImage(path: str, width: int, height: int)`
 - One image file, returned as every frame (`--image PATH`). `read()` returns a
   copy, so a task that edits its frame can't change what later passes see.
-  `release()` does nothing.
+  `flush()` and `release()` do nothing.
 - **Raises** `FileNotFoundError` if the file is missing or isn't a readable
   image.
 
@@ -369,7 +410,8 @@ Every timed turn goes through these two helpers, so a calibration made with
   `timed_spin(motors, config.SECONDS_PER_360)`. That is a clockwise rotation
   at `ROTATE_SPEED`, then `stop()` in a `finally`, so the wheels stop even if
   the wait is interrupted. It does **not** touch the camera. `main.py` opens the camera
-  through [scheduler/camera.py](#schedulercamerapy) before this runs.
+  through [scheduler/camera.py](#schedulercamerapy) before this runs, and
+  flushes it right after (see [main.py](#mainpy)).
 
 ### `IdleAction(*, driver=None) -> None`
 - **Behavior:** Calls `stop()`. Called in dispatch cases c, d and f (see
@@ -570,7 +612,7 @@ and the `motion.kinematics` helpers. With `--dry-run` it uses a printing
 - Speeds are `ROTATE_SPEED` / `STRAFE_SPEED` (forward, backward and single
   wheel use the lower of the two). The script refuses anything above
   `MAX_SPEED`.
-- **Signals:** uses [`motion.stop_on_signal`](#motionstop_on_signalpy).
+- **Signals:** uses [`scheduler.signals`](#schedulersignalspy), with `driver.stop` as the stop.
 
 ## tools/spin_calibration.py
 
@@ -589,23 +631,36 @@ See the README for how to use it. **Not run on the robot yet.**
   settle, prints the requested and measured time, direction and speed, and asks
   for a note. `--repeat N` runs N trials, and it prints a CSV log at the end.
   `--dry-run` uses a printing `FakeMotorDriver`.
-- **Signals:** uses [`motion.stop_on_signal`](#motionstop_on_signalpy).
+- **Signals:** uses [`scheduler.signals`](#schedulersignalspy), with `driver.stop` as the stop.
 
-## motion/stop_on_signal.py
+## scheduler/signals.py
 
-### `install_stop_handlers(driver, write=print) -> None`
-For the scripts in `tools/`. On SIGINT, SIGTERM or SIGHUP (SIGHUP only where
-the OS has it), the handler:
+Used by `main.py` and the motor scripts in `tools/`. It imports nothing from
+the project, so `main.py --dry-run` can use it without importing `motion/`.
+(It replaces `motion/stop_on_signal.py`.)
 
-1. ignores further stop signals,
-2. calls `driver.stop()`,
-3. prints a message (it says so if `stop()` raised), and
-4. leaves with `os._exit(128 + signum)`.
+### `install_stop_handlers(stop: Callable[[], None], *, release: Callable[[], None] | None = None, write: Callable[[str], None] = print) -> dict`
+Installs a handler for SIGINT, SIGTERM and SIGHUP (SIGHUP only where the OS
+has it) and returns the previous handlers. The handler:
+
+1. ignores further stop signals, so a second Ctrl-C can't interrupt the stop,
+2. calls `stop()` (if it raises, the message says so and it still exits),
+3. calls `release()`, if given, ignoring any error,
+4. writes a message, ignoring any error (after SIGHUP the terminal is gone, and
+   writing to it can raise `EIO`), and
+5. leaves with `os._exit(128 + signum)`.
 
 It never raises. Python runs signal handlers between bytecodes, which may be
 inside Raspbot_Lib's bare `except:`, and an exception raised there would be
-swallowed. `os._exit` can't be caught. SIGKILL can't be handled. Use
-[tools/emergency_stop.py](#toolsemergency_stoppy).
+swallowed. `os._exit` can't be caught, and the interrupted code never resumes,
+so it can't send another wheel command after the stop. A handler runs only
+once control is back in Python, so a blocking C call (such as a camera read
+waiting on a frame) delays it until the call returns. SIGKILL can't be
+handled: use [tools/emergency_stop.py](#toolsemergency_stoppy).
+
+### `restore_handlers(previous: dict) -> None`
+Puts back the handlers `install_stop_handlers` returned. A previous handler
+of `None` (one not installed from Python) becomes `SIG_DFL`.
 
 ## main.py
 
@@ -619,7 +674,7 @@ holds the control flow.
 |---|---|---|
 | `--dry-run` | off | Use [`DryRunMotion`](#schedulerdry_runpy) instead of `motion/`. It prints actions instead of driving the motors. `motion/` is never imported. |
 | `--image PATH` | none | Use this image as every frame ([`StaticImage`](#staticimagepath-str-width-int-height-int)) instead of the live camera. |
-| `--camera INDEX` | `config.CAMERA_INDEX` | `cv2.VideoCapture` index for [`Camera`](#cameraindex-int-width-int-height-int). |
+| `--camera INDEX` | `config.CAMERA_INDEX` | `cv2.VideoCapture` index for [`Camera`](#cameraindex-int-width-int-height-int--buffer_size-int--none--none). |
 | `--timeout SECONDS` | `config.TIMEOUT_SECONDS` | Safety cutoff passed to `run_loop`. It must be greater than 0. |
 
 ### `capture_frame`
@@ -643,12 +698,36 @@ Red isn't in the table because it goes through the
 [Red-turn sequence](#red-turn-sequence). `build_tasks` asserts, before the
 camera is opened, that `set(color_actions) | {"red"} == set(TRACKED_COLORS)`.
 
+### `startup_then_flush(startup_action, flush_camera) -> Callable[[], None]`
+Returns a zero-argument callable that runs `startup_action()` and then
+`flush_camera()`. `build_tasks` passes it to `run_loop` as `startup_action`,
+with the chosen startup action (`StartupAction` or the dry-run stand-in) and
+`lambda: source.flush(CAMERA_FLUSH_FRAMES)`. So the flush happens after the
+startup spin and before `run_loop` takes `start_time`. The loop's first frame
+is fresh, and the flush isn't counted against the timeout. If the startup
+action raises, there's no flush. `run_loop`'s signature is unchanged.
+
+### `report_camera(camera: Camera, index: int) -> None`
+With a live camera, `build_tasks` calls it once, right after opening it. It
+prints `camera.delivered_size()`, and warns on stderr if that isn't
+`IMAGE_WIDTH` x `IMAGE_HEIGHT`. Frames are still resized, but a different
+native size (especially another aspect ratio) changes pixel counts and
+positions.
+
 ### Control flow (`main(argv: list[str] | None = None) -> None`)
 1. Parse the command line (`argv`, or `sys.argv[1:]` when `None`).
-2. Pick the motion actions (`--dry-run` or real). Then open the frame source.
-   Motion is picked first, so a failing motion import can't leave the camera
-   open.
+2. Pick the motion actions (`--dry-run` or real). Then open the frame source
+   (a live camera gets `buffer_size=CAMERA_BUFFER_SIZE` and is reported with
+   `report_camera`). Motion is picked first, so a failing motion import can't
+   leave the camera open.
 3. `state: RedState = {"red_start": None, "red_rearm": True}`
-4. `run_loop(state, ...)`. Its [Shutdown](#shutdown) step stops the motors and
-   releases the camera on every exit path.
-5. On Ctrl-C, exit with code `130`. On timeout, print a message and return.
+4. Install the [signal handlers](#schedulersignalspy) with the run's
+   `stop_motors` and `release_camera`.
+5. `run_loop(state, ...)`. Its [Shutdown](#shutdown) step stops the motors and
+   releases the camera when the loop times out or raises. A signal is handled
+   by the handlers from step 4 instead.
+6. Restore the previous signal handlers, however `run_loop` ended.
+7. On timeout, print a message and return. On SIGINT (Ctrl-C), SIGTERM or
+   SIGHUP, the handler exits with `128 + signum` (130, 143, 129). A
+   `KeyboardInterrupt` that still reaches `main()` some other way exits with
+   code `130`.

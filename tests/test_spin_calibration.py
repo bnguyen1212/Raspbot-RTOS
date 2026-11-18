@@ -240,7 +240,8 @@ def test_real_mode_uses_the_actions_default_driver(fake_raspbot_lib, monkeypatch
     monkeypatch.setattr(script, "install_stop_handlers", lambda d: handled.append(d))
     monkeypatch.setattr(script, "run_trials", lambda d, s: ran.append(d) or [])
     assert script.main(["1"]) == 0
-    assert handled == ran == [driver_module.default_driver()]
+    assert ran == [driver_module.default_driver()]
+    assert handled == [driver_module.default_driver().stop]
     assert len(fake_raspbot_lib) == 1
 
 

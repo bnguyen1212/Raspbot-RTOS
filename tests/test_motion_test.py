@@ -157,10 +157,10 @@ def test_end_of_input_quits_cleanly():
 # ---------------------------------------------------------------------------
 
 def test_uses_the_shared_stop_handlers():
-    # The handler itself is tested in test_stop_on_signal.py.
-    from motion import stop_on_signal
+    # The handler itself is tested in test_signals.py.
+    from scheduler import signals
 
-    assert script.install_stop_handlers is stop_on_signal.install_stop_handlers
+    assert script.install_stop_handlers is signals.install_stop_handlers
 
 
 @pytest.mark.skipif(not hasattr(signal, "SIGHUP"), reason="needs POSIX signals (runs on the Pi)")

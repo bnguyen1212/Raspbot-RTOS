@@ -33,6 +33,8 @@ signatures each module must implement.
     for an image file). This is the only place the camera is opened.
   - `dry_run.py`: stand-in motion actions that print instead of driving the
     motors (`--dry-run`).
+  - `signals.py`: the SIGINT/SIGTERM/SIGHUP handlers that stop the motors and
+    exit, shared by `main.py` and the motor scripts in `tools/`.
 - `main.py` — the entry point. It parses the command line, picks the real or
   dry-run actions and the frame source, and hands them to `run_loop`.
 - `vision/` — color counting and localization from camera frames (`ColorCounter`,
@@ -154,8 +156,19 @@ python main.py --dry-run --image path/to.png --timeout 3
 | `--camera INDEX` | `config.CAMERA_INDEX` | Camera device index. |
 | `--timeout SECONDS` | `config.TIMEOUT_SECONDS` | Safety cutoff, for shorter test runs. |
 
-The motors stop and the camera is released however the run ends: timeout,
-Ctrl-C (exit code 130), or an error. A dry run uses the real vision code.
+The motors stop and the camera is released however the run ends: timeout, an
+error, Ctrl-C (exit code 130), `kill` (SIGTERM, exit code 143) or the SSH
+session closing (SIGHUP, exit code 129). The signals are handled by
+`scheduler/signals.py`, which stops the motors straight from the handler, so
+Raspbot_Lib's bare `except:` can't swallow them. `kill -9` can't be caught:
+run `python3 tools/emergency_stop.py` after one. A dry run uses the real
+vision code.
+
+With a live camera, `main.py` prints the frame size the camera delivers (and
+warns if it isn't `config.IMAGE_WIDTH` x `IMAGE_HEIGHT`). After the startup
+spin it throws away `config.CAMERA_FLUSH_FRAMES` frames before the loop
+starts, so the loop never acts on an old frame. On Linux the camera is opened
+through V4L2, with a driver queue of `config.CAMERA_BUFFER_SIZE` frames.
 
 **TODO:** fill in Pi-specific setup steps still needed — enabling I2C,
 camera/USB permissions, and installing the Yahboom motor library on-device.
