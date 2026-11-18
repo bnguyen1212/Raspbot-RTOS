@@ -7,6 +7,8 @@ and RedAction's times come from FakeClock.
 
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from config import (
@@ -190,9 +192,11 @@ def test_red_turning_resends_cw_and_keeps_state(driver):
 
 def test_red_finishes_exactly_at_seconds_per_180(driver):
     # "Turning" is now - red_start < SECONDS_PER_180, so reaching it exactly
-    # ends the turn.
-    turning: RedState = {"red_start": START, "red_rearm": True}
-    state = RedAction(turning, START + SECONDS_PER_180, driver=driver)
+    # ends the turn. The turn starts at 0.0 so that now - red_start is exactly
+    # SECONDS_PER_180: from START, START + x - START can round to just under
+    # or just over x, which would make this test pass or fail by luck.
+    turning: RedState = {"red_start": 0.0, "red_rearm": True}
+    state = RedAction(turning, SECONDS_PER_180, driver=driver)
     assert state == {"red_start": None, "red_rearm": False}
     assert driver.calls == [("stop", ())]
 
@@ -236,8 +240,12 @@ def test_red_full_turn_on_a_fake_clock(driver):
     turning_passes = len(history) - 1  # every pass but the last
     assert driver.calls == [("set_wheels", rotate_in_place("cw"))] * turning_passes + [("stop", ())]
     assert driver.wheels == (0, 0, 0, 0)
-    assert clock() - START == SECONDS_PER_180  # stopped on the first pass at the limit
-    assert len(history) == SECONDS_PER_180 / step + 1
+    # Stopped on the first pass at or past the limit. The calibrated
+    # SECONDS_PER_180 needn't be a multiple of the step, so that pass can land
+    # after the limit; the pass before it must still be under it.
+    elapsed = clock() - START
+    assert elapsed - step < SECONDS_PER_180 <= elapsed
+    assert len(history) == math.ceil(SECONDS_PER_180 / step) + 1
     assert all(s == {"red_start": START, "red_rearm": True} for s in history[:-1])
     assert history[-1] == {"red_start": None, "red_rearm": False}
 
@@ -353,9 +361,9 @@ EVERY_CALL_CASES = [
     ),
     (
         "red-finished",
-        lambda d: RedAction(
-            {"red_start": START, "red_rearm": True}, START + SECONDS_PER_180, driver=d
-        ),
+        # From 0.0, so the elapsed time is exactly SECONDS_PER_180 (see
+        # test_red_finishes_exactly_at_seconds_per_180).
+        lambda d: RedAction({"red_start": 0.0, "red_rearm": True}, SECONDS_PER_180, driver=d),
         STOPPED,
     ),
 ]

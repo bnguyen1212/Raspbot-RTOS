@@ -173,12 +173,16 @@ def test_dry_run_red_action_follows_the_contract_timing():
     fake = DryRunMotion(log=lambda line: None)
     state = {"red_start": None, "red_rearm": True}
 
-    started = fake.red_action(state, 5.0)
-    assert started == {"red_start": 5.0, "red_rearm": True}
+    # Start at 0.0 so that "now - red_start" is exactly SECONDS_PER_180 at the
+    # limit, whatever its calibrated value. (From 5.0, 5.0 + 1.1 - 5.0 rounds
+    # to just under 1.1.) It also checks that a turn started at time 0.0
+    # counts as running: red_start is compared with None, not for truthiness.
+    started = fake.red_action(state, 0.0)
+    assert started == {"red_start": 0.0, "red_rearm": True}
     assert state == {"red_start": None, "red_rearm": True}  # input not modified
 
-    assert fake.red_action(started, 5.0 + SECONDS_PER_180 / 2) == started
-    assert fake.red_action(started, 5.0 + SECONDS_PER_180) == {"red_start": None, "red_rearm": False}
+    assert fake.red_action(started, SECONDS_PER_180 / 2) == started
+    assert fake.red_action(started, SECONDS_PER_180) == {"red_start": None, "red_rearm": False}
 
 
 # ---------------------------------------------------------------------------
