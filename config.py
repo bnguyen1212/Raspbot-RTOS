@@ -52,8 +52,12 @@ COMMAND_COLORS: dict[str, tuple[HSVRange, ...]] = {
         ((100, 120, 50), (130, 255, 255)),
     ),
     "red": (
-        ((0, 120, 70), (10, 255, 255)),     # low end of the hue circle
-        ((170, 120, 70), (179, 255, 255)),  # high end, wraps back to 0
+        # S >= 160 (was 120): shaded skin reaches H 8-12 with S up to ~180, and
+        # at S >= 120 an arm or face in view alone counted up to ~2,700 "red"
+        # pixels. At 160, skin stayed under ~300 px in webcam tests while a red
+        # screen kept >= 7,000 px. Recheck with the robot camera and real cards.
+        ((0, 160, 70), (10, 255, 255)),     # low end of the hue circle
+        ((170, 160, 70), (179, 255, 255)),  # high end, wraps back to 0
     ),
 }
 
@@ -62,9 +66,20 @@ COMMAND_COLORS: dict[str, tuple[HSVRange, ...]] = {
 # pixel count (see "Dominant color" in docs/task_contracts.md).
 TRACKED_COLORS = tuple(COMMAND_COLORS)
 
+# Noise removal: each color's mask gets a morphological opening with a square
+# kernel this many pixels wide before pixels are counted or located. It
+# removes isolated specks smaller than the kernel (sensor noise, stray
+# reflections) and leaves solid regions like a card intact. Must be odd: an even
+# kernel shifts the mask by a pixel. 1 (or 0) turns it off.
+# TODO: placeholder -- tune on the robot.
+MASK_OPEN_KERNEL_PX = 3
+
 # A color whose pixel count is below this is "not detected".
+# 1,500 (was 500) is ~0.5% of the frame: about 5x the stray skin/background
+# pixels seen in webcam tests, and well under a phone-sized target at arm's
+# length (~7,000 px). The real cards are larger, so this leaves room.
 # TODO: placeholder -- tune on the robot (640x480 = 307,200 pixels per frame).
-MIN_PIXEL_THRESHOLD = 500
+MIN_PIXEL_THRESHOLD = 1500
 
 # ---------------------------------------------------------------------------
 # Vision: frame geometry

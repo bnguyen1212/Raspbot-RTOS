@@ -9,13 +9,13 @@ usage details will be filled in as the implementation lands.
 ## Status
 
 - **Done:** the scheduler (`scheduler/`) and the `main.py` wiring, including
-  `--dry-run` and safe shutdown.
+  `--dry-run` and safe shutdown; the vision layer (`vision/`), with
+  placeholder HSV ranges still to be tuned on the robot.
 - **Motion written, NOT verified on the robot:** `motion/` has its
   kinematics, centering, actions, `ShutdownAction` and the real Raspbot_Lib
   driver (`motion/mecanum.py`). It's all tested against fakes only. The motor-ID
   and inversion block at the top of `motion/mecanum.py` is a guess that must be
   checked on the robot, with the wheels off the ground, before a real run.
-- **Still stubs:** `vision/`.
 
 See [docs/task_contracts.md](docs/task_contracts.md) for the function
 signatures each module must implement.
@@ -36,7 +36,8 @@ signatures each module must implement.
 - `main.py` — the entry point. It parses the command line, picks the real or
   dry-run actions and the frame source, and hands them to `run_loop`.
 - `vision/` — color counting and localization from camera frames (`ColorCounter`,
-  `ColorLocator`). Pure functions over image arrays — no camera or hardware calls.
+  `ColorLocator`, and the shared HSV mask helper in `hsv_mask.py`). Pure
+  functions over image arrays — no camera or hardware calls.
 - `motion/` — robot actions and mecanum wheel control. `motion/actions.py`
   is the only place `main.py` calls into to move the robot. Underneath it,
   `kinematics.py` (logical wheel speeds) and `centering.py` are pure and
@@ -57,6 +58,9 @@ signatures each module must implement.
   into `tests/sample_images/` (see
   [Capturing sample images](#capturing-sample-images-toolscapture_samplespy)).
   No motors.
+- `tools/vision_debug.py` — runs the vision pipeline on image files and saves an
+  annotated picture (masks, centroid, centering deadband) plus HSV statistics,
+  for tuning the color ranges in `config.py`.
 - `tests/` — unit tests, including static sample images (`tests/sample_images/`)
   for offline vision testing.
 - `docs/` — task/interface contracts shared across contributors.
@@ -93,8 +97,13 @@ don't just change the signature.
 
 ## Testing
 
-- Vision code (`vision/`) should be testable offline using the static images in
-  `tests/sample_images/` — no robot required.
+- Vision code (`vision/`) is tested offline with synthetic frames, plus any
+  labeled photos in `tests/sample_images/` (naming rules in
+  `tests/sample_images/README.md`) — no robot required. To see what vision
+  makes of a photo:
+  ```
+  python tools/vision_debug.py tests/sample_images/green_center_near.png -o debug_out
+  ```
 - Motion code (`motion/`) requires the actual robot to verify end-to-end; budget
   hardware time accordingly and coordinate access with the team.
 - Scheduler code (`scheduler/`) is tested with fake tasks and a fake clock, so
@@ -146,8 +155,7 @@ python main.py --dry-run --image path/to.png --timeout 3
 | `--timeout SECONDS` | `config.TIMEOUT_SECONDS` | Safety cutoff, for shorter test runs. |
 
 The motors stop and the camera is released however the run ends: timeout,
-Ctrl-C (exit code 130), or an error. A dry run needs the vision code, so it
-fails at `ColorCounter` until `vision/` is merged.
+Ctrl-C (exit code 130), or an error. A dry run uses the real vision code.
 
 **TODO:** fill in Pi-specific setup steps still needed — enabling I2C,
 camera/USB permissions, and installing the Yahboom motor library on-device.
