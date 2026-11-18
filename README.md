@@ -53,6 +53,10 @@ signatures each module must implement.
 - `tools/spin_calibration.py` — timed spin-in-place trials for calibrating
   `SECONDS_PER_360` / `SECONDS_PER_180` (see
   [Spin calibration](#spin-calibration-toolsspin_calibrationpy)).
+- `tools/capture_samples.py` — captures still images from the robot's camera
+  into `tests/sample_images/` (see
+  [Capturing sample images](#capturing-sample-images-toolscapture_samplespy)).
+  No motors.
 - `tests/` — unit tests, including static sample images (`tests/sample_images/`)
   for offline vision testing.
 - `docs/` — task/interface contracts shared across contributors.
@@ -204,6 +208,44 @@ python3 tools/spin_calibration.py 4 --direction right --repeat 5  # on the robot
 - Ctrl-C, SIGTERM and a dropped SSH session stop the wheels and exit.
 - `RedAction`'s turn is checked once per loop pass, so it can overshoot. Confirm
   `SECONDS_PER_180` with a run of the real loop as well.
+
+### Capturing sample images (`tools/capture_samples.py`)
+
+Saves still frames from the robot's camera, for offline vision tests. It runs
+headless over SSH and never touches the motors: nothing from `motion/` or
+Raspbot_Lib is imported. **It hasn't been run on the robot yet.**
+
+```
+python3 tools/capture_samples.py --test             # check the camera: one frame to /tmp/test.png
+python3 tools/capture_samples.py                    # interactive session into tests/sample_images/
+python3 tools/capture_samples.py --index 1          # a different camera (default config.CAMERA_INDEX)
+python3 tools/capture_samples.py --outdir captures  # save somewhere else
+python3 tools/capture_samples.py --dry-run          # any machine: synthetic frame, no camera
+python3 tools/capture_samples.py --dry-run --image path/to.png
+```
+
+- Run `--test` before a session. It prints the frame shape and saves one frame.
+  `--test PATH` saves to PATH instead of `/tmp/test.png`.
+- On startup it prints the frame size the camera actually delivers, and warns
+  if that isn't `config.IMAGE_WIDTH` x `IMAGE_HEIGHT`. Images are saved at the
+  delivered size, unresized. `Camera.read()` and `StaticImage` resize them to
+  the config size when they're used.
+- Each round asks for a name, then captures when you press Enter (typing
+  anything there cancels). It discards 15 frames first, so auto-exposure and
+  white balance settle and stale buffered frames are flushed. Then it saves the
+  next frame as a lossless PNG, `<outdir>/<name>.png`. An empty name quits.
+- It won't overwrite an existing file unless you answer `y`.
+- After each capture it prints the path, the frame shape, and the mean HSV of
+  the centre region (the middle quarter of the width and height), on OpenCV's
+  scale. Hue is averaged as an angle, so red reads near 0 or 179, not 90.
+  Compare it against `COMMAND_COLORS` in `config.py`.
+- `--dry-run` saves to a temp folder by default (the path is printed), so test
+  runs don't put fake images in `tests/sample_images/`.
+- The camera is released however the script ends: quitting, an error, Ctrl-C,
+  `kill` (SIGTERM) or a dropped SSH session (SIGHUP).
+
+To get the images onto your laptop, copy them back from the Pi, for example
+`scp pi@<robot>:~/RaspbotV2-RTOS/tests/sample_images/*.png tests/sample_images/`.
 
 ## Task Ownership
 

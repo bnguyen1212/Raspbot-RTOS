@@ -61,10 +61,24 @@ class Camera:
             RuntimeError: if the camera returns no frame (e.g. unplugged).
                 run_loop's finally block then stops the motors.
         """
+        return _fit(self.read_raw(), self._width, self._height)
+
+    def read_raw(self) -> np.ndarray:
+        """Grab one frame exactly as the camera delivers it, without resizing.
+
+        tools/capture_samples.py uses this to report the camera's real
+        resolution, which read() hides.
+
+        Returns:
+            numpy.ndarray: BGR frame, at whatever size the device delivers.
+
+        Raises:
+            RuntimeError: if the camera returns no frame (e.g. unplugged).
+        """
         ok, frame = self._capture.read()
         if not ok or frame is None:
             raise RuntimeError("camera read failed")
-        return _fit(frame, self._width, self._height)
+        return frame
 
     def release(self) -> None:
         """Release the device. Safe to call more than once."""
