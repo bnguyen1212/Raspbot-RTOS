@@ -172,6 +172,41 @@ def test_max_speed_out_of_range_is_rejected(bad):
 
 
 # ---------------------------------------------------------------------------
+# set_motor_raw (diagnostic, used by tools/motion_test.py)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("motor_id", [0, 1, 2, 3])
+def test_set_motor_raw_drives_only_that_library_id(motor_id):
+    driver, board, _ = make_driver()
+    driver.set_motor_raw(motor_id, -0.2)
+    assert board.calls == [(motor_id, -51)]
+
+
+def test_set_motor_raw_ignores_the_wiring_block(monkeypatch):
+    # Even with the wheel mapped elsewhere and inverted, ID 0 gets +51.
+    monkeypatch.setattr(mecanum, "FRONT_LEFT", Wheel(motor_id=3, inverted=True))
+    monkeypatch.setattr(mecanum, "REAR_RIGHT", Wheel(motor_id=0, inverted=True))
+    driver, board, _ = make_driver()
+    driver.set_motor_raw(0, 0.2)
+    assert board.calls == [(0, 51)]
+
+
+def test_set_motor_raw_clamps_and_sends_an_int():
+    driver, board, _ = make_driver()
+    driver.set_motor_raw(1, 1.0)
+    assert board.calls == [(1, MAX_LIB)]
+    assert type(board.calls[0][1]) is int
+
+
+@pytest.mark.parametrize("bad", [-1, 4, 10])
+def test_set_motor_raw_rejects_unknown_ids(bad):
+    driver, board, _ = make_driver()
+    with pytest.raises(ValueError):
+        driver.set_motor_raw(bad, 0.2)
+    assert board.calls == []
+
+
+# ---------------------------------------------------------------------------
 # stop
 # ---------------------------------------------------------------------------
 
@@ -207,6 +242,21 @@ def test_context_manager_stops_on_normal_exit():
         assert d is driver
         d.set_wheels(0.2, 0.2, 0.2, 0.2)
     assert board.calls[-8:] == ALL_ZERO + ALL_ZERO
+
+
+def test_fake_driver_shares_the_context_manager():
+    # It's defined on MotorDriver, so the fake (and tools/motion_test.py's
+    # dry run) behaves exactly like the real driver.
+    from motion.driver import FakeMotorDriver
+
+    fake = FakeMotorDriver()
+    with pytest.raises(RuntimeError):
+        with fake:
+            fake.set_wheels(0.2, 0.2, 0.2, 0.2)
+            raise RuntimeError("boom")
+    with fake:  # can be entered again
+        pass
+    assert [name for name, _ in fake.calls] == ["set_wheels", "stop", "stop"]
 
 
 @pytest.mark.parametrize("error", [RuntimeError("boom"), KeyboardInterrupt()])

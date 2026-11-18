@@ -28,7 +28,6 @@ from __future__ import annotations
 import math
 import time
 from collections.abc import Callable
-from types import TracebackType
 from typing import Final, NamedTuple, Protocol
 
 from config import MAX_SPEED
@@ -106,8 +105,9 @@ def to_library_speed(speed: float, max_speed: float = MAX_SPEED) -> int:
 class RaspbotMotorDriver(MotorDriver):
     """MotorDriver that drives the RASPBOT V2's four mecanum wheels.
 
-    Use it as a context manager to guarantee the wheels are stopped however
-    the block ends, including on an exception or KeyboardInterrupt:
+    Use it as a context manager (inherited from MotorDriver) to guarantee the
+    wheels are stopped however the block ends, including on an exception or
+    KeyboardInterrupt:
 
         with RaspbotMotorDriver() as driver:
             driver.set_wheels(0.1, 0.1, 0.1, 0.1)
@@ -180,6 +180,22 @@ class RaspbotMotorDriver(MotorDriver):
         for motor_id, library_speed in commands:
             self._board.Ctrl_Muto(motor_id, library_speed)
 
+    def set_motor_raw(self, motor_id: int, speed: float) -> None:
+        """Diagnostic: drive ONE motor by its library ID, bypassing the wiring block.
+
+        No ID mapping and no inversion: a positive speed is the library's own
+        "forward" (Ctrl_Muto direction 0). The speed is still clamped to
+        max_speed and sent as an int. tools/motion_test.py uses this to find
+        out which physical wheel each ID drives. The rest of the project uses
+        set_wheels.
+
+        Raises:
+            ValueError: if `motor_id` isn't 0-3, or `speed` is NaN.
+        """
+        if motor_id not in ALL_MOTOR_IDS:
+            raise ValueError(f"motor_id must be one of 0-3, got {motor_id!r}")
+        self._board.Ctrl_Muto(motor_id, to_library_speed(speed, self._max_speed))
+
     def stop(self) -> None:
         """Write speed 0 to all four motors, twice, STOP_REPEAT_GAP_S apart.
 
@@ -194,15 +210,3 @@ class RaspbotMotorDriver(MotorDriver):
     def _write_zeros(self) -> None:
         for wheel in self._wheels:
             self._board.Ctrl_Muto(wheel.motor_id, 0)
-
-    def __enter__(self) -> RaspbotMotorDriver:
-        return self
-
-    def __exit__(
-        self,
-        exc_type: type[BaseException] | None,
-        exc: BaseException | None,
-        tb: TracebackType | None,
-    ) -> None:
-        """Stop the wheels. Any exception (KeyboardInterrupt too) still propagates."""
-        self.stop()

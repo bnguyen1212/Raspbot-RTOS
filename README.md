@@ -48,6 +48,8 @@ signatures each module must implement.
 - `tools/emergency_stop.py` — standalone script for the robot that writes speed 0
   to all four motors (`python3 tools/emergency_stop.py`). It imports nothing from
   this repo.
+- `tools/motion_test.py` — interactive motor test menu to run on the robot over
+  SSH (see [Motion test](#motion-test-toolsmotion_testpy)).
 - `tests/` — unit tests, including static sample images (`tests/sample_images/`)
   for offline vision testing.
 - `docs/` — task/interface contracts shared across contributors.
@@ -142,6 +144,38 @@ fails at `ColorCounter` until `vision/` is merged.
 
 **TODO:** fill in Pi-specific setup steps still needed — enabling I2C,
 camera/USB permissions, and installing the Yahboom motor library on-device.
+
+### Motion test (`tools/motion_test.py`)
+
+An interactive menu for checking the motors over SSH, one movement at a time.
+**It hasn't been run on the robot yet.**
+
+```
+python3 tools/motion_test.py --dry-run         # any machine: FakeMotorDriver, nothing moves
+python3 tools/motion_test.py                   # on the robot: real motors
+python3 tools/motion_test.py --duration 1.0    # shorter movements (default 1.5 s, max 5 s)
+```
+
+- **Menu 1–6** rotate left or right, strafe left or right, and drive forward or
+  backward. They run at `config.ROTATE_SPEED` / `STRAFE_SPEED`, never above
+  `MAX_SPEED`, for `--duration` seconds and then stop.
+- **Menu 7** stops all four wheels.
+- **Menu 8 (single wheel)** spins one library motor ID (0–3) for 1 s in the
+  direction you pick, bypassing the wiring block. Use it to fill in the
+  "VERIFY ON ROBOT" block in `motion/mecanum.py`: note which physical wheel
+  each ID drives, and whether library-forward pushes the robot forward.
+  Do this first, because menu 1–6 depend on that block.
+- **Menu 9 (hold test)** starts one wheel and prints the script's PID, then
+  waits. From a second SSH session, `kill -9 <pid>` shows whether the board
+  keeps spinning after a crash (stop it with `tools/emergency_stop.py`), and
+  `kill <pid>` checks that the signal handler stops it.
+- Before anything moves, the script says what it's about to do and waits for
+  Enter. Typing anything else cancels.
+- Ctrl-C, `kill` (SIGTERM) and a dropped SSH session (SIGHUP) all stop the
+  wheels and exit. `kill -9` can't be caught.
+
+Put the robot on a stand with the wheels off the ground for the first run, and
+keep `python3 tools/emergency_stop.py` ready in a second session.
 
 ## Task Ownership
 

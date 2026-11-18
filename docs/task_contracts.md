@@ -436,6 +436,11 @@ Importing this module never imports the motor library.
   stopped.
 - Neither method waits for the wheels to change speed. A real `stop()` pauses
   for a few milliseconds.
+- **Context manager (defined on the base class, so every driver has it):**
+  `with driver:` calls `stop()` however the block ends (normally, by an
+  exception or by `KeyboardInterrupt`), then lets the exception propagate. It
+  can be entered any number of times. It only covers exceptions that reach
+  Python, not one the library swallowed.
 
 ### `FakeMotorDriver(MotorDriver)`
 For tests. `calls` records every call in order, as `("set_wheels", (fl, fr, rl, rr))`
@@ -504,10 +509,15 @@ It never returns a float. It raises `ValueError` for NaN.
   (5 ms), and writes 0 to all four again. The second pass guards against one
   dropped write. It doesn't confirm anything, because the library hides
   failures.
-- **Context manager:** `with RaspbotMotorDriver() as driver:` calls `stop()`
-  however the block ends (normally, by an exception or by
-  `KeyboardInterrupt`), then lets the exception propagate. This only covers
-  exceptions that reach Python. It can't cover one the library swallowed.
+- **`set_motor_raw(motor_id, speed)` (diagnostic):** drives one motor by its
+  library ID, **bypassing the wiring block**: no mapping and no inversion, so
+  a positive speed is the library's own "forward". It still clamps to
+  `max_speed` and sends an int, and it raises `ValueError` for an ID other
+  than 0–3. Only `tools/motion_test.py` uses it, to work out the wiring. The
+  rest of the project uses `set_wheels`.
+- **Context manager:** inherited from [`MotorDriver`](#motordriver-abstract-base-class):
+  `with RaspbotMotorDriver() as driver:` stops the wheels however the block
+  ends.
 
 ## tools/emergency_stop.py
 
@@ -518,6 +528,24 @@ repository, so it works even when the project code is broken. It creates a
 prints each call. It can't confirm the wheels stopped (the library hides I2C
 errors), so it tells you to look for `I2C error` lines and to check the
 robot. **Not run on the robot yet.**
+
+## tools/motion_test.py
+
+An interactive menu for testing the motors over SSH, one movement at a time.
+See the README for how to use it. It uses `motion.mecanum.RaspbotMotorDriver`
+and the `motion.kinematics` helpers. With `--dry-run` it uses a printing
+`FakeMotorDriver` subclass. **Not run on the robot yet.**
+
+- Every movement runs inside `with driver:`, so it ends with `stop()` however
+  it ends. Nothing moves until the user presses Enter on a description of the
+  movement.
+- Speeds are `ROTATE_SPEED` / `STRAFE_SPEED` (forward, backward and single
+  wheel use the lower of the two). The script refuses anything above
+  `MAX_SPEED`.
+- **Signals:** SIGINT, SIGTERM and SIGHUP handlers call `stop()` directly and
+  leave with `os._exit(128 + signum)`. They never raise, because an exception
+  raised in a signal handler while the library is inside its bare `except:`
+  would be swallowed.
 
 ## main.py
 

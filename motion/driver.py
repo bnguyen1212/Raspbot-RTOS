@@ -12,11 +12,15 @@ from __future__ import annotations
 
 import functools
 from abc import ABC, abstractmethod
+from types import TracebackType
+from typing import TypeVar
 
 from motion.kinematics import WheelSpeeds
 
 # One recorded driver call: ("set_wheels", (fl, fr, rl, rr)) or ("stop", ()).
 DriverCall = tuple[str, tuple[float, ...]]
+
+_Driver = TypeVar("_Driver", bound="MotorDriver")
 
 
 class MotorDriver(ABC):
@@ -32,6 +36,13 @@ class MotorDriver(ABC):
 
     Neither method waits for the wheels to reach the new speed. A real stop()
     may pause for a few milliseconds (see motion.mecanum).
+
+    Every driver is a context manager that calls stop() however the block
+    ends, including on an exception or KeyboardInterrupt, and then lets the
+    exception propagate. It can be entered any number of times:
+
+        with driver:
+            driver.set_wheels(...)
     """
 
     @abstractmethod
@@ -43,6 +54,18 @@ class MotorDriver(ABC):
     @abstractmethod
     def stop(self) -> None:
         """Stop all four wheels. Must be safe to call when they're already stopped."""
+
+    def __enter__(self: _Driver) -> _Driver:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        """Stop the wheels. Any exception (KeyboardInterrupt too) still propagates."""
+        self.stop()
 
 
 class FakeMotorDriver(MotorDriver):
