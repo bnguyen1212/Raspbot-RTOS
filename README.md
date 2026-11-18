@@ -11,10 +11,11 @@ usage details will be filled in as the implementation lands.
 - **Done:** the scheduler (`scheduler/`) and the `main.py` wiring, including
   `--dry-run` and safe shutdown; the vision layer (`vision/`), with
   placeholder HSV ranges still to be tuned on the robot.
-- **Still stubs:** `motion/`.
-- **Still needed:** a motion stop action (`ShutdownAction`). Without it, a
-  real run can't stop the wheels on exit, so **don't run `main.py` on the
-  robot without `--dry-run` until it exists.** See "Shutdown" in the contract.
+- **Motion written, NOT verified on the robot:** `motion/` has its
+  kinematics, centering, actions, `ShutdownAction` and the real Raspbot_Lib
+  driver (`motion/mecanum.py`). It's all tested against fakes only. The motor-ID
+  and inversion block at the top of `motion/mecanum.py` is a guess that must be
+  checked on the robot, with the wheels off the ground, before a real run.
 
 See [docs/task_contracts.md](docs/task_contracts.md) for the function
 signatures each module must implement.
@@ -37,12 +38,29 @@ signatures each module must implement.
 - `vision/` — color counting and localization from camera frames (`ColorCounter`,
   `ColorLocator`, and the shared HSV mask helper in `hsv_mask.py`). Pure
   functions over image arrays — no camera or hardware calls.
+- `motion/` — robot actions and mecanum wheel control. `motion/actions.py`
+  is the only place `main.py` calls into to move the robot. Underneath it,
+  `kinematics.py` (logical wheel speeds) and `centering.py` are pure and
+  hardware-free. `driver.py` holds the `MotorDriver` interface, a recording
+  `FakeMotorDriver` for tests, and the lazily created default driver.
+  `mecanum.py` is the real driver and the only file that imports Raspbot_Lib.
+  Its "verify on robot" block holds the motor-ID mapping and per-wheel
+  inversions.
+- `tools/emergency_stop.py` — standalone script for the robot that writes speed 0
+  to all four motors (`python3 tools/emergency_stop.py`). It imports nothing from
+  this repo.
+- `tools/motion_test.py` — interactive motor test menu to run on the robot over
+  SSH (see [Motion test](#motion-test-toolsmotion_testpy)).
+- `tools/spin_calibration.py` — timed spin-in-place trials for calibrating
+  `SECONDS_PER_360` / `SECONDS_PER_180` (see
+  [Spin calibration](#spin-calibration-toolsspin_calibrationpy)).
+- `tools/capture_samples.py` — captures still images from the robot's camera
+  into `tests/sample_images/` (see
+  [Capturing sample images](#capturing-sample-images-toolscapture_samplespy)).
+  No motors.
 - `tools/vision_debug.py` — runs the vision pipeline on image files and saves an
   annotated picture (masks, centroid, centering deadband) plus HSV statistics,
   for tuning the color ranges in `config.py`.
-- `motion/` — robot actions and low-level mecanum wheel control. `motion/actions.py`
-  is the only place `main.py` calls into to move the robot; `motion/mecanum.py` is
-  the low-level kinematics layer underneath it.
 - `tests/` — unit tests, including static sample images (`tests/sample_images/`)
   for offline vision testing.
 - `docs/` — task/interface contracts shared across contributors.
@@ -141,6 +159,101 @@ Ctrl-C (exit code 130), or an error. A dry run uses the real vision code.
 
 **TODO:** fill in Pi-specific setup steps still needed — enabling I2C,
 camera/USB permissions, and installing the Yahboom motor library on-device.
+
+### Motion test (`tools/motion_test.py`)
+
+An interactive menu for checking the motors over SSH, one movement at a time.
+**It hasn't been run on the robot yet.**
+
+```
+python3 tools/motion_test.py --dry-run         # any machine: FakeMotorDriver, nothing moves
+python3 tools/motion_test.py                   # on the robot: real motors
+python3 tools/motion_test.py --duration 1.0    # shorter movements (default 1.5 s, max 5 s)
+```
+
+- **Menu 1–6** rotate left or right, strafe left or right, and drive forward or
+  backward. They run at `config.ROTATE_SPEED` / `STRAFE_SPEED`, never above
+  `MAX_SPEED`, for `--duration` seconds and then stop.
+- **Menu 7** stops all four wheels.
+- **Menu 8 (single wheel)** spins one library motor ID (0–3) for 1 s in the
+  direction you pick, bypassing the wiring block. Use it to fill in the
+  "VERIFY ON ROBOT" block in `motion/mecanum.py`: note which physical wheel
+  each ID drives, and whether library-forward pushes the robot forward.
+  Do this first, because menu 1–6 depend on that block.
+- **Menu 9 (hold test)** starts one wheel and prints the script's PID, then
+  waits. From a second SSH session, `kill -9 <pid>` shows whether the board
+  keeps spinning after a crash (stop it with `tools/emergency_stop.py`), and
+  `kill <pid>` checks that the signal handler stops it.
+- Before anything moves, the script says what it's about to do and waits for
+  Enter. Typing anything else cancels.
+- Ctrl-C, `kill` (SIGTERM) and a dropped SSH session (SIGHUP) all stop the
+  wheels and exit. `kill -9` can't be caught.
+
+Put the robot on a stand with the wheels off the ground for the first run, and
+keep `python3 tools/emergency_stop.py` ready in a second session.
+
+### Spin calibration (`tools/spin_calibration.py`)
+
+Times the open-loop turns (`SECONDS_PER_360`, `SECONDS_PER_180` in
+`config.py`). **It hasn't been run on the robot yet.**
+
+```
+python3 tools/spin_calibration.py 4 --dry-run                     # any machine; nothing moves
+python3 tools/spin_calibration.py 4 --direction right --repeat 5  # on the robot, on the floor
+```
+
+- It spins in place for the given number of seconds (max 30), then stops.
+  `--direction` is `left` (default) or `right`. `--speed` defaults to
+  `config.ROTATE_SPEED`, and anything above `MAX_SPEED` is rejected.
+- It rotates through the same code as `StartupAction` and `RedAction`
+  (`motion.actions.timed_spin`), so the timings carry over. The actions turn
+  **right at `ROTATE_SPEED`**, and the script warns when your settings differ.
+  Calibrate with `--direction right` and the default speed.
+- Each trial waits for Enter before it spins. Afterwards it prints the
+  requested and measured time, direction and speed, and asks for a note
+  (for example the angle turned). `--repeat N` runs N trials, and the script
+  prints a CSV log at the end.
+- Ctrl-C, SIGTERM and a dropped SSH session stop the wheels and exit.
+- `RedAction`'s turn is checked once per loop pass, so it can overshoot. Confirm
+  `SECONDS_PER_180` with a run of the real loop as well.
+
+### Capturing sample images (`tools/capture_samples.py`)
+
+Saves still frames from the robot's camera, for offline vision tests. It runs
+headless over SSH and never touches the motors: nothing from `motion/` or
+Raspbot_Lib is imported. **It hasn't been run on the robot yet.**
+
+```
+python3 tools/capture_samples.py --test             # check the camera: one frame to /tmp/test.png
+python3 tools/capture_samples.py                    # interactive session into tests/sample_images/
+python3 tools/capture_samples.py --index 1          # a different camera (default config.CAMERA_INDEX)
+python3 tools/capture_samples.py --outdir captures  # save somewhere else
+python3 tools/capture_samples.py --dry-run          # any machine: synthetic frame, no camera
+python3 tools/capture_samples.py --dry-run --image path/to.png
+```
+
+- Run `--test` before a session. It prints the frame shape and saves one frame.
+  `--test PATH` saves to PATH instead of `/tmp/test.png`.
+- On startup it prints the frame size the camera actually delivers, and warns
+  if that isn't `config.IMAGE_WIDTH` x `IMAGE_HEIGHT`. Images are saved at the
+  delivered size, unresized. `Camera.read()` and `StaticImage` resize them to
+  the config size when they're used.
+- Each round asks for a name, then captures when you press Enter (typing
+  anything there cancels). It discards 15 frames first, so auto-exposure and
+  white balance settle and stale buffered frames are flushed. Then it saves the
+  next frame as a lossless PNG, `<outdir>/<name>.png`. An empty name quits.
+- It won't overwrite an existing file unless you answer `y`.
+- After each capture it prints the path, the frame shape, and the mean HSV of
+  the centre region (the middle quarter of the width and height), on OpenCV's
+  scale. Hue is averaged as an angle, so red reads near 0 or 179, not 90.
+  Compare it against `COMMAND_COLORS` in `config.py`.
+- `--dry-run` saves to a temp folder by default (the path is printed), so test
+  runs don't put fake images in `tests/sample_images/`.
+- The camera is released however the script ends: quitting, an error, Ctrl-C,
+  `kill` (SIGTERM) or a dropped SSH session (SIGHUP).
+
+To get the images onto your laptop, copy them back from the Pi, for example
+`scp pi@<robot>:~/RaspbotV2-RTOS/tests/sample_images/*.png tests/sample_images/`.
 
 ## Task Ownership
 

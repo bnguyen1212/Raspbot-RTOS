@@ -136,6 +136,7 @@ def test_real_mode_wiring_uses_motion_actions(card_image):
     assert tasks["startup_action"] is actions.StartupAction
     assert tasks["idle_action"] is actions.IdleAction
     assert tasks["red_action"] is actions.RedAction
+    assert tasks["stop_motors"] is actions.ShutdownAction
     assert tasks["color_actions"] == {"green": actions.GreenAction, "blue": actions.BlueAction}
 
 
@@ -249,6 +250,17 @@ def test_camera_opens_device_resizes_frames_and_releases(monkeypatch):
 
     cam.release()
     assert capture.release_count == 1
+
+
+def test_camera_read_raw_returns_frame_unresized(monkeypatch):
+    frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+    monkeypatch.setattr(
+        camera_module.cv2, "VideoCapture", lambda index: FakeVideoCapture(index, frames=[frame])
+    )
+    cam = Camera(0, IMAGE_WIDTH, IMAGE_HEIGHT)
+    assert cam.read_raw().shape == (720, 1280, 3)
+    with pytest.raises(RuntimeError, match="read failed"):
+        cam.read_raw()
 
 
 def test_camera_that_cannot_open_raises(monkeypatch):

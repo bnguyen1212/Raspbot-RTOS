@@ -120,22 +120,34 @@ TIMEOUT_SECONDS = 20.0
 # ---------------------------------------------------------------------------
 # Motion
 # ---------------------------------------------------------------------------
-# Wheel speed magnitudes, in the Yahboom motor library's speed units.
-# TODO: placeholder -- confirm the library's range and tune on the robot.
-ROTATE_SPEED = 50
-STRAFE_SPEED = 50
+# Wheel speeds are normalized: -1.0 is full speed backward, 1.0 full speed
+# forward. motion.mecanum converts them to the library's -255..255.
+#
+# MAX_SPEED is the safety cap: motion.mecanum clamps every wheel speed to
+# +/-MAX_SPEED before sending it, whatever the caller asked for.
+# TODO: placeholder -- raise it only after the robot has been tested at this cap.
+MAX_SPEED = 0.4
+
+# Wheel speed magnitudes for rotating and strafing, in the same normalized units.
+# TODO: placeholder -- tune on the robot.
+ROTATE_SPEED = 0.2
+STRAFE_SPEED = 0.2
+
+assert 0 < MAX_SPEED <= 1.0, "MAX_SPEED must be in (0, 1.0]"
+assert 0 < ROTATE_SPEED <= MAX_SPEED, "ROTATE_SPEED must be in (0, MAX_SPEED]"
+assert 0 < STRAFE_SPEED <= MAX_SPEED, "STRAFE_SPEED must be in (0, MAX_SPEED]"
 
 # Open-loop rotation timing. There is no gyro, so turns are timed: these are the
 # seconds a rotation at ROTATE_SPEED takes. SECONDS_PER_180 is calibrated on its
 # own rather than derived as SECONDS_PER_360 / 2, because spin-up and spin-down
 # make a short turn take more than half the time of a full one.
 #
-# SECONDS_PER_360 times StartupAction's blocking spin (mecanum.spin_360).
+# SECONDS_PER_360 times StartupAction's blocking spin.
 # SECONDS_PER_180 times RedAction's non-blocking turn. That turn is checked once
 # per loop pass, so it can overshoot by up to one pass. Calibrate it by running
 # the real loop, not by timing an isolated spin.
 #
 # TODO: placeholders -- calibrate both on the robot, at ROTATE_SPEED, on the
 # actual floor surface. Recalibrate whenever ROTATE_SPEED changes.
-SECONDS_PER_360 = 4.0
-SECONDS_PER_180 = 2.0
+SECONDS_PER_360 = 2.17
+SECONDS_PER_180 = 1.1
