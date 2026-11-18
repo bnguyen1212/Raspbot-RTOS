@@ -31,7 +31,12 @@ def TimerCheck(start_time: float, now: float) -> bool:
         bool: True when now - start_time > config.TIMEOUT_SECONDS (the caller
         must stop the loop), False otherwise.
     """
-    raise NotImplementedError
+
+    if (now - start_time > TIMEOUT_SECONDS):
+        return True
+    else:
+        return False
+    
 
 
 def round_robin(tasks: list[Callable[[], None]]) -> None:
@@ -49,7 +54,11 @@ def round_robin(tasks: list[Callable[[], None]]) -> None:
     Returns:
         None
     """
-    raise NotImplementedError
+
+    for task in tasks:
+        task()
+
+    return
 
 
 def run_loop(
