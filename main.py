@@ -42,8 +42,8 @@ def stop_motors() -> None:
     """Stop all wheels. Placeholder until motion/ provides a stop action.
 
     TODO: replace with the motion layer's stop action (e.g. a ShutdownAction()
-    in motion/actions.py that calls mecanum.stop()). Agree on it with the
-    motion owner -- see "Known gap" in docs/task_contracts.md.
+    in motion/actions.py that calls the motor driver's stop()). Agree on it
+    with the motion owner -- see "Shutdown" in docs/task_contracts.md.
     """
     raise NotImplementedError
 

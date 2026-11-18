@@ -115,7 +115,7 @@ STRAFE_SPEED = 50
 # own rather than derived as SECONDS_PER_360 / 2, because spin-up and spin-down
 # make a short turn take more than half the time of a full one.
 #
-# SECONDS_PER_360 times StartupAction's blocking spin (mecanum.spin_360).
+# SECONDS_PER_360 times StartupAction's blocking spin.
 # SECONDS_PER_180 times RedAction's non-blocking turn. That turn is checked once
 # per loop pass, so it can overshoot by up to one pass. Calibrate it by running
 # the real loop, not by timing an isolated spin.

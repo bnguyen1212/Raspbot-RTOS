@@ -10,7 +10,10 @@ usage details will be filled in as the implementation lands.
 
 - **Done:** the scheduler (`scheduler/`) and the `main.py` wiring, including
   `--dry-run` and safe shutdown.
-- **Still stubs:** `vision/` and `motion/`.
+- **Motion logic done, hardware not yet:** `motion/` has its kinematics,
+  centering and actions, tested against a fake driver. The real motor driver
+  (`motion.driver.default_driver()`) isn't written yet.
+- **Still stubs:** `vision/`.
 - **Still needed:** a motion stop action (`ShutdownAction`). Without it, a
   real run can't stop the wheels on exit, so **don't run `main.py` on the
   robot without `--dry-run` until it exists.** See "Shutdown" in the contract.
@@ -35,9 +38,12 @@ signatures each module must implement.
   dry-run actions and the frame source, and hands them to `run_loop`.
 - `vision/` — color counting and localization from camera frames (`ColorCounter`,
   `ColorLocator`). Pure functions over image arrays — no camera or hardware calls.
-- `motion/` — robot actions and low-level mecanum wheel control. `motion/actions.py`
-  is the only place `main.py` calls into to move the robot; `motion/mecanum.py` is
-  the low-level kinematics layer underneath it.
+- `motion/` — robot actions and mecanum wheel control. `motion/actions.py`
+  is the only place `main.py` calls into to move the robot. Underneath it,
+  `kinematics.py` (wheel speeds, including the per-wheel `SIGN_*` polarity) and
+  `centering.py` are pure and hardware-free, and `driver.py` holds the
+  `MotorDriver` interface, a recording `FakeMotorDriver` for tests, and the lazily
+  loaded real driver.
 - `tests/` — unit tests, including static sample images (`tests/sample_images/`)
   for offline vision testing.
 - `docs/` — task/interface contracts shared across contributors.

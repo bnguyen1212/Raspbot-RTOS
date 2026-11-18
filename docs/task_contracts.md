@@ -49,7 +49,7 @@ nothing from the project, so it can't create a circular import. Values marked
 | `TIMEOUT_SECONDS` | `float` | `20.0` | Safety cutoff. `TimerCheck` compares `time.monotonic()` readings against it. |
 | `ROTATE_SPEED` | `int` | `50` | Wheel speed for rotations and spins, in motor-library units. **TODO: confirm the range and tune.** |
 | `STRAFE_SPEED` | `int` | `50` | Wheel speed for strafing, in motor-library units. **TODO: confirm the range and tune.** |
-| `SECONDS_PER_360` | `float` | `4.0` | Time for a full turn at `ROTATE_SPEED`; used by `mecanum.spin_360` (startup). Rotation is open-loop (no gyro). **TODO: calibrate.** |
+| `SECONDS_PER_360` | `float` | `4.0` | Time for a full turn at `ROTATE_SPEED`; used by `StartupAction`'s spin. Rotation is open-loop (no gyro). **TODO: calibrate.** |
 | `SECONDS_PER_180` | `float` | `2.0` | Length of `RedAction`'s turn at `ROTATE_SPEED`. Calibrated separately because spin-up and spin-down make it more than half of `SECONDS_PER_360`. The turn is checked once per loop pass, so it can overshoot by up to one pass. Calibrate it by running the real loop. **TODO: calibrate.** |
 
 ### Idle value
@@ -296,71 +296,129 @@ pass. `log` receives each line; tests pass `list.append` to capture them.
 ## motion/actions.py
 
 These action functions are the *only* things `main.py` calls to make the robot
-move or idle. They call `motion.mecanum`, never the motor library directly.
+move or idle. They drive the wheels only through a
+[`MotorDriver`](#motiondriverpy), never the motor library directly, and work
+out wheel speeds with the pure helpers in [motion/kinematics.py](#motionkinematicspy)
+and [motion/centering.py](#motioncenteringpy).
+
+Every action takes an optional keyword-only `driver: MotorDriver | None = None`.
+`None` (what `run_loop` always passes, by not passing it) means
+`motion.driver.default_driver()`, which is looked up at call time. So importing
+`motion.actions` never imports the motor library. Tests pass a
+`FakeMotorDriver`. The positional signatures below are unchanged, so
+`run_loop`'s calls are unaffected.
+
 The four per-loop actions (Idle, Green, Blue, Red) **never block**. Each one
-makes at most one call to the motion layer and returns, so the loop gets back to
-`TimerCheck` promptly.
+makes at most one driver call and returns, so the loop gets back to
+`TimerCheck` promptly. A `set_wheels` call leaves the wheels running until the
+next call changes them, so one Green or Blue "step" lasts one loop pass.
 
-For Green and Blue, let `error = p_vector[0] - config.IMAGE_CENTER_X`. A positive
-error means the target is right of center. If
-`abs(error) <= config.CENTER_DEADBAND_PX`, the target is centered and the action
-does not move the robot.
+For Green and Blue, the direction comes from
+[`centering_command(p_vector[0])`](#motioncenteringpy).
+A target with `abs(p_vector[0] - config.IMAGE_CENTER_X) <= config.CENTER_DEADBAND_PX`
+is centered, and the action stops the wheels.
 
-### `StartupAction() -> None`
+### `StartupAction(*, driver=None, sleep=time.sleep) -> None`
 - **Behavior:** Runs once, before the loop starts and before `start_time` is
-  taken, so it may block. Owns one-time motor hardware init (for example the
-  I2C bus), then does the startup 360° spin with
-  `mecanum.spin_360(config.ROTATE_SPEED)`. It does **not** touch the camera.
-  `main.py` opens the camera through [scheduler/camera.py](#schedulercamerapy)
-  before this runs.
+  taken, so it may block. Getting the default driver is the one-time motor
+  hardware init (for example the I2C bus). Then it does the startup 360° spin:
+  `set_wheels(*rotate_in_place("cw"))`, `sleep(config.SECONDS_PER_360)`,
+  `stop()`. The stop is in a `finally`, so the wheels stop even if the wait is
+  interrupted. It does **not** touch the camera. `main.py` opens the camera
+  through [scheduler/camera.py](#schedulercamerapy) before this runs.
 
-### `IdleAction() -> None`
-- **Behavior:** Doesn't move the robot. Called in dispatch cases c, d and f
-  (see [Dispatch rule](#dispatch-rule-run_loop-every-loop-pass)).
+### `IdleAction(*, driver=None) -> None`
+- **Behavior:** Calls `driver.stop()`. Called in dispatch cases c, d and f (see
+  [Dispatch rule](#dispatch-rule-run_loop-every-loop-pass)). It stops rather
+  than doing nothing because Green and Blue leave the wheels running between
+  passes. Without the stop, the robot would keep moving after its target
+  left the frame.
 
-### `GreenAction(p_vector: Position) -> None`
-- **Behavior:** If the target isn't centered, calls
-  `mecanum.rotate_in_place("cw" if error > 0 else "ccw", config.ROTATE_SPEED)`.
-  It is never called with `None`.
+### `GreenAction(p_vector: Position, *, driver=None) -> None`
+- **Behavior:** `"right"` → `set_wheels(*rotate_in_place("cw"))`, `"left"` →
+  `set_wheels(*rotate_in_place("ccw"))`, both at `config.ROTATE_SPEED`.
+  `"centered"` → `stop()`. It is never called with `None`.
 
-### `BlueAction(p_vector: Position) -> None`
-- **Behavior:** If the target isn't centered, calls
-  `mecanum.strafe("right" if error > 0 else "left", config.STRAFE_SPEED)`.
-  It is never called with `None`.
+### `BlueAction(p_vector: Position, *, driver=None) -> None`
+- **Behavior:** `"right"` / `"left"` → `set_wheels(*strafe(direction))` at
+  `config.STRAFE_SPEED`. `"centered"` → `stop()`. It is never called with
+  `None`.
 
-### `RedAction(state: RedState, now: float) -> RedState`
+### `RedAction(state: RedState, now: float, *, driver=None) -> RedState`
 - **Inputs:** `state` — the current `RedState`. `now` — a fresh
   `time.monotonic()` reading.
 - **Output:** the updated `RedState`. **It never modifies `state` itself.** It
   returns a new dict, and the caller must rebind: `state = RedAction(state, now)`.
-- **Behavior:** Advances the turn by one step, with at most one motion call:
+- **Behavior:** Advances the turn by one step, with at most one driver call:
 
-  | Condition | Motion call | Returned state |
+  | Condition | Driver call | Returned state |
   |---|---|---|
-  | `red_start is None` (start) | `mecanum.start_rotation("cw", config.ROTATE_SPEED)` | `red_start = now`; `red_rearm` unchanged |
+  | `red_start is None` (start) | `set_wheels(*rotate_in_place("cw"))` (at `config.ROTATE_SPEED`) | `red_start = now`; `red_rearm` unchanged |
   | `now - red_start < config.SECONDS_PER_180` (turning) | none (the motors are already running) | unchanged |
-  | otherwise (finished) | `mecanum.stop()` | `red_start = None`, `red_rearm = False` |
+  | otherwise (finished) | `stop()` | `red_start = None`, `red_rearm = False` |
 
 ### `ShutdownAction() -> None` (proposed)
 *Proposed by the scheduler. Not agreed with the motion owner yet.*
-- **Behavior:** Stops all four wheels with `mecanum.stop()`. Safe to call when
+- **Behavior:** Stops all four wheels with `driver.stop()`. Safe to call when
   they're already stopped. `main.py` would pass it to `run_loop` as
   `stop_motors`, replacing the placeholder (see [Shutdown](#shutdown)). It must
   exist before `dev` is run on the robot.
 
-## motion/mecanum.py
+## motion/kinematics.py
 
-Low-level kinematics. Only `motion/actions.py` should import this module, and
-only this module calls the Yahboom motor library. There is no gyro, so timed
-turns are open-loop. Their timings are only valid at `config.ROTATE_SPEED`.
+Pure mecanum kinematics. It imports no hardware library and keeps no state.
+There is no gyro, so timed turns are open-loop, and their timings are only
+valid at `config.ROTATE_SPEED`.
 
-| Function | Used by | Blocks? | Behavior |
-|---|---|---|---|
-| `rotate_in_place(direction: str, speed: int) -> None` | `GreenAction` | no | `direction`: `"cw"` \| `"ccw"` (clockwise as seen from above, so `"cw"` turns right). Runs one short, bounded rotation and returns. |
-| `strafe(direction: str, speed: int) -> None` | `BlueAction` | no | `direction`: `"left"` \| `"right"`. Runs one short, bounded strafe and returns. |
-| `start_rotation(direction: str, speed: int) -> None` | `RedAction` | no | Starts the wheels rotating in place and returns right away. They keep turning until `stop()` is called. The caller does the timing. |
-| `stop() -> None` | `RedAction`, `ShutdownAction` (proposed) | no | Stops all four wheels. Safe to call when they're already stopped. |
-| `spin_360(speed: int) -> None` | `StartupAction` | yes | Drives the wheels for `SECONDS_PER_360`, then stops. Blocking is fine because it runs before the loop. `speed` must be `ROTATE_SPEED`. |
+Chassis frame, seen from above: `vx > 0` drives forward, `vy > 0` strafes
+right, `omega > 0` rotates clockwise (turns right). Wheel speeds are
+`WheelSpeeds = tuple[float, float, float, float]` in the order
+`(front_left, front_right, rear_left, rear_right)`, in motor-library units.
+
+**Wheel polarity:** `SIGN_FRONT_LEFT`, `SIGN_FRONT_RIGHT`, `SIGN_REAR_LEFT` and
+`SIGN_REAR_RIGHT` (each `+1` or `-1`) at the top of the file multiply every
+speed the module returns. If a wheel turns the wrong way on the robot, flip
+its sign there. **TODO: verify each wheel on the robot.**
+
+| Function | Returns |
+|---|---|
+| `wheel_speeds(vx: float, vy: float, omega: float) -> WheelSpeeds` | `(vx+vy+ω, vx−vy−ω, vx−vy+ω, vx+vy−ω)`, times the signs |
+| `rotate_in_place(direction: "cw" \| "ccw", speed: float = ROTATE_SPEED) -> WheelSpeeds` | `wheel_speeds(0, 0, ±speed)`: left wheels one way, right wheels the other |
+| `strafe(direction: "left" \| "right", speed: float = STRAFE_SPEED) -> WheelSpeeds` | `wheel_speeds(0, ±speed, 0)`: the two diagonals in opposite directions |
+
+`rotate_in_place` and `strafe` raise `ValueError` for any other direction.
+
+## motion/centering.py
+
+### `centering_command(x: float, image_center_x: float = IMAGE_CENTER_X, deadband: float = CENTER_DEADBAND_PX) -> str`
+- **Output:** `"centered"` when `abs(x - image_center_x) <= deadband` (so
+  exactly on the edge counts as centered), otherwise `"right"` if
+  `x > image_center_x`, else `"left"`.
+- **Raises** `ValueError` if `deadband < 0`. Pure: no hardware, no state.
+
+## motion/driver.py
+
+Importing this module never imports the motor library.
+
+### `MotorDriver` (abstract base class)
+- `set_wheels(front_left, front_right, rear_left, rear_right) -> None` — start
+  each wheel at the given signed speed. The wheels keep turning until the next
+  call. Speeds come from `motion.kinematics` with polarity already applied, so
+  an implementation passes them through unchanged.
+- `stop() -> None` — stop all four wheels. Safe to call when they're already
+  stopped.
+- Neither method waits.
+
+### `FakeMotorDriver(MotorDriver)`
+For tests. `calls` records every call in order, as `("set_wheels", (fl, fr, rl, rr))`
+or `("stop", ())`. `wheels` holds the current speeds (all zero at the start and
+after `stop()`).
+
+### `default_driver() -> MotorDriver`
+The robot's real driver, created on the first call and cached after that, so
+the I2C bus is opened once per run. The real driver will be imported inside
+this function. **Not written yet:** it raises `NotImplementedError` for now,
+so a real (non-dry) run fails in `StartupAction`.
 
 ## main.py
 
