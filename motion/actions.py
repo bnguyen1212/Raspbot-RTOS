@@ -24,16 +24,56 @@ from __future__ import annotations
 
 import time
 from collections.abc import Callable
+from typing import Final
 
-from config import SECONDS_PER_180, SECONDS_PER_360, Position, RedState
+from config import ROTATE_SPEED, SECONDS_PER_180, SECONDS_PER_360, Position, RedState
 from motion.centering import centering_command
 from motion.driver import MotorDriver, default_driver, existing_default_driver
-from motion.kinematics import rotate_in_place, strafe
+from motion.kinematics import RotationDirection, rotate_in_place, strafe
+
+# The direction StartupAction's 360 and RedAction's 180 turn. Both timings in
+# config.py (SECONDS_PER_360, SECONDS_PER_180) are for this direction at
+# config.ROTATE_SPEED.
+TIMED_TURN_DIRECTION: Final[RotationDirection] = "cw"
 
 
 def _resolve(driver: MotorDriver | None) -> MotorDriver:
     """Return `driver`, or the real default driver when it's None."""
     return default_driver() if driver is None else driver
+
+
+def start_rotation(
+    motors: MotorDriver,
+    direction: RotationDirection = TIMED_TURN_DIRECTION,
+    speed: float = ROTATE_SPEED,
+) -> None:
+    """Start rotating in place and return right away. The one rotate-in-place path.
+
+    StartupAction, RedAction and tools/spin_calibration.py all start their
+    timed turns here, so a calibration made with the tool applies to the
+    actions, as long as it uses the same direction and speed.
+    """
+    motors.set_wheels(*rotate_in_place(direction, speed))
+
+
+def timed_spin(
+    motors: MotorDriver,
+    seconds: float,
+    *,
+    direction: RotationDirection = TIMED_TURN_DIRECTION,
+    speed: float = ROTATE_SPEED,
+    sleep: Callable[[float], None] = time.sleep,
+) -> None:
+    """Rotate in place for `seconds`, then stop. Blocks for the whole spin.
+
+    The stop is in a `finally`, so the wheels stop even if the wait is
+    interrupted. StartupAction and tools/spin_calibration.py both use this.
+    """
+    start_rotation(motors, direction, speed)
+    try:
+        sleep(seconds)
+    finally:
+        motors.stop()
 
 
 def StartupAction(
@@ -53,12 +93,7 @@ def StartupAction(
         driver: MotorDriver to use; None means default_driver().
         sleep: how to wait; tests pass a fake that doesn't really sleep.
     """
-    motors = _resolve(driver)
-    motors.set_wheels(*rotate_in_place("cw"))
-    try:
-        sleep(SECONDS_PER_360)
-    finally:
-        motors.stop()
+    timed_spin(_resolve(driver), SECONDS_PER_360, sleep=sleep)
 
 
 def IdleAction(*, driver: MotorDriver | None = None) -> None:
@@ -144,10 +179,10 @@ def RedAction(
     motors = _resolve(driver)
     red_start = state["red_start"]
     if red_start is None:
-        motors.set_wheels(*rotate_in_place("cw"))
+        start_rotation(motors)
         return {**state, "red_start": now}
     if now - red_start < SECONDS_PER_180:
-        motors.set_wheels(*rotate_in_place("cw"))
+        start_rotation(motors)
         return {**state}
     motors.stop()
     return {**state, "red_start": None, "red_rearm": False}

@@ -334,13 +334,26 @@ For Green and Blue, the direction comes from
 A target with `abs(p_vector[0] - config.IMAGE_CENTER_X) <= config.CENTER_DEADBAND_PX`
 is centered.
 
+### Shared rotation helpers
+Every timed turn goes through these two helpers, so a calibration made with
+[tools/spin_calibration.py](#toolsspin_calibrationpy) applies to the actions.
+
+- `TIMED_TURN_DIRECTION = "cw"` — the direction of `StartupAction`'s 360 and
+  `RedAction`'s 180. `SECONDS_PER_360` and `SECONDS_PER_180` are calibrated
+  for this direction at `config.ROTATE_SPEED`.
+- `start_rotation(motors, direction=TIMED_TURN_DIRECTION, speed=ROTATE_SPEED) -> None`
+  — `motors.set_wheels(*rotate_in_place(direction, speed))`. Doesn't block.
+- `timed_spin(motors, seconds, *, direction=TIMED_TURN_DIRECTION, speed=ROTATE_SPEED, sleep=time.sleep) -> None`
+  — `start_rotation`, `sleep(seconds)`, then `stop()` in a `finally`.
+  Blocks for the whole spin.
+
 ### `StartupAction(*, driver=None, sleep=time.sleep) -> None`
 - **Behavior:** Runs once, before the loop starts and before `start_time` is
   taken, so it may block. Getting the default driver is the one-time motor
   hardware init (it opens the I2C bus). Then it does the startup 360° spin:
-  `set_wheels(*rotate_in_place("cw"))`, `sleep(config.SECONDS_PER_360)`,
-  `stop()`. The stop is in a `finally`, so the wheels stop even if the wait is
-  interrupted. It does **not** touch the camera. `main.py` opens the camera
+  `timed_spin(motors, config.SECONDS_PER_360)`. That is a clockwise rotation
+  at `ROTATE_SPEED`, then `stop()` in a `finally`, so the wheels stop even if
+  the wait is interrupted. It does **not** touch the camera. `main.py` opens the camera
   through [scheduler/camera.py](#schedulercamerapy) before this runs.
 
 ### `IdleAction(*, driver=None) -> None`
@@ -542,10 +555,42 @@ and the `motion.kinematics` helpers. With `--dry-run` it uses a printing
 - Speeds are `ROTATE_SPEED` / `STRAFE_SPEED` (forward, backward and single
   wheel use the lower of the two). The script refuses anything above
   `MAX_SPEED`.
-- **Signals:** SIGINT, SIGTERM and SIGHUP handlers call `stop()` directly and
-  leave with `os._exit(128 + signum)`. They never raise, because an exception
-  raised in a signal handler while the library is inside its bare `except:`
-  would be swallowed.
+- **Signals:** uses [`motion.stop_on_signal`](#motionstop_on_signalpy).
+
+## tools/spin_calibration.py
+
+`python3 tools/spin_calibration.py <seconds> [--direction left|right] [--speed X] [--repeat N] [--dry-run]`.
+See the README for how to use it. **Not run on the robot yet.**
+
+- It rotates with [`timed_spin`](#shared-rotation-helpers) on
+  `default_driver()`, the same helper, wheel pattern and driver the actions
+  use. Only the duration, direction and speed come from the command line.
+- Defaults: direction `left`, speed `config.ROTATE_SPEED`. Speeds above
+  `MAX_SPEED` (or ≤ 0) are rejected, and so are durations over 30 s. It warns
+  when the direction isn't `TIMED_TURN_DIRECTION` (`right`) or the speed isn't
+  `ROTATE_SPEED`, because then the results don't apply to the actions as
+  configured.
+- Each trial waits for Enter, spins inside `with driver:`, pauses 1 s to
+  settle, prints the requested and measured time, direction and speed, and asks
+  for a note. `--repeat N` runs N trials, and it prints a CSV log at the end.
+  `--dry-run` uses a printing `FakeMotorDriver`.
+- **Signals:** uses [`motion.stop_on_signal`](#motionstop_on_signalpy).
+
+## motion/stop_on_signal.py
+
+### `install_stop_handlers(driver, write=print) -> None`
+For the scripts in `tools/`. On SIGINT, SIGTERM or SIGHUP (SIGHUP only where
+the OS has it), the handler:
+
+1. ignores further stop signals,
+2. calls `driver.stop()`,
+3. prints a message (it says so if `stop()` raised), and
+4. leaves with `os._exit(128 + signum)`.
+
+It never raises. Python runs signal handlers between bytecodes, which may be
+inside Raspbot_Lib's bare `except:`, and an exception raised there would be
+swallowed. `os._exit` can't be caught. SIGKILL can't be handled. Use
+[tools/emergency_stop.py](#toolsemergency_stoppy).
 
 ## main.py
 

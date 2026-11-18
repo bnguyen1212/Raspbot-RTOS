@@ -134,5 +134,5 @@ assert 0 < STRAFE_SPEED <= MAX_SPEED, "STRAFE_SPEED must be in (0, MAX_SPEED]"
 #
 # TODO: placeholders -- calibrate both on the robot, at ROTATE_SPEED, on the
 # actual floor surface. Recalibrate whenever ROTATE_SPEED changes.
-SECONDS_PER_360 = 4.0
-SECONDS_PER_180 = 2.0
+SECONDS_PER_360 = 2.17
+SECONDS_PER_180 = 1.1

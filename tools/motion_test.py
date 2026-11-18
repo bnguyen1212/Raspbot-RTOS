@@ -24,12 +24,10 @@ from __future__ import annotations
 
 import argparse
 import os
-import signal
 import sys
 import time
 from collections.abc import Callable, Sequence
 from pathlib import Path
-from types import FrameType
 from typing import NamedTuple, Protocol
 
 # Run as `python3 tools/motion_test.py`, Python puts tools/ (not the repo root)
@@ -42,6 +40,7 @@ from config import MAX_SPEED, ROTATE_SPEED, STRAFE_SPEED  # noqa: E402
 from motion.driver import FakeMotorDriver  # noqa: E402
 from motion.kinematics import WheelSpeeds, rotate_in_place, strafe, wheel_speeds  # noqa: E402
 from motion.mecanum import to_library_speed  # noqa: E402
+from motion.stop_on_signal import install_stop_handlers  # noqa: E402
 
 DEFAULT_DURATION_S = 1.5
 MAX_DURATION_S = 5.0  # refuse longer --duration values, in case of a typo
@@ -49,10 +48,6 @@ SINGLE_WHEEL_S = 1.0
 # Forward/backward and single-wheel tests have no speed of their own in
 # config.py, so they use the lower of the two configured speeds.
 LOW_SPEED = min(ROTATE_SPEED, STRAFE_SPEED)
-
-STOP_SIGNALS = tuple(
-    getattr(signal, name) for name in ("SIGINT", "SIGTERM", "SIGHUP") if hasattr(signal, name)
-)  # Windows has no SIGHUP; it only matters for --dry-run there.
 
 Read = Callable[[str], str]
 Write = Callable[[str], None]
@@ -257,35 +252,6 @@ def run_menu(
         except EOFError:  # Ctrl-D, or the end of piped input
             write("")
             return
-
-
-def install_stop_handlers(driver: DiagnosticDriver, write: Write = print) -> None:
-    """On SIGINT, SIGTERM or SIGHUP: call stop() directly, then exit.
-
-    The handler doesn't raise KeyboardInterrupt or SystemExit, because
-    Raspbot_Lib's bare `except:` would swallow them if the signal arrived
-    during a motor write. It calls stop() itself and leaves with os._exit,
-    which can't be caught.
-    """
-
-    def handle(signum: int, frame: FrameType | None) -> None:
-        for sig in STOP_SIGNALS:  # a second Ctrl-C mustn't interrupt the stop
-            signal.signal(sig, signal.SIG_IGN)
-        name = signal.Signals(signum).name
-        try:
-            driver.stop()
-            message = f"\n{name}: stop sent to all four motors. Exiting."
-        except BaseException as err:  # still exit, and say the stop failed
-            message = (
-                f"\n{name}: stop() FAILED ({err!r}). "
-                "Run python3 tools/emergency_stop.py now."
-            )
-        write(message)
-        sys.stdout.flush()
-        os._exit(128 + signum)
-
-    for sig in STOP_SIGNALS:
-        signal.signal(sig, handle)
 
 
 def positive_duration(text: str) -> float:

@@ -50,6 +50,9 @@ signatures each module must implement.
   this repo.
 - `tools/motion_test.py` — interactive motor test menu to run on the robot over
   SSH (see [Motion test](#motion-test-toolsmotion_testpy)).
+- `tools/spin_calibration.py` — timed spin-in-place trials for calibrating
+  `SECONDS_PER_360` / `SECONDS_PER_180` (see
+  [Spin calibration](#spin-calibration-toolsspin_calibrationpy)).
 - `tests/` — unit tests, including static sample images (`tests/sample_images/`)
   for offline vision testing.
 - `docs/` — task/interface contracts shared across contributors.
@@ -176,6 +179,31 @@ python3 tools/motion_test.py --duration 1.0    # shorter movements (default 1.5 
 
 Put the robot on a stand with the wheels off the ground for the first run, and
 keep `python3 tools/emergency_stop.py` ready in a second session.
+
+### Spin calibration (`tools/spin_calibration.py`)
+
+Times the open-loop turns (`SECONDS_PER_360`, `SECONDS_PER_180` in
+`config.py`). **It hasn't been run on the robot yet.**
+
+```
+python3 tools/spin_calibration.py 4 --dry-run                     # any machine; nothing moves
+python3 tools/spin_calibration.py 4 --direction right --repeat 5  # on the robot, on the floor
+```
+
+- It spins in place for the given number of seconds (max 30), then stops.
+  `--direction` is `left` (default) or `right`. `--speed` defaults to
+  `config.ROTATE_SPEED`, and anything above `MAX_SPEED` is rejected.
+- It rotates through the same code as `StartupAction` and `RedAction`
+  (`motion.actions.timed_spin`), so the timings carry over. The actions turn
+  **right at `ROTATE_SPEED`**, and the script warns when your settings differ.
+  Calibrate with `--direction right` and the default speed.
+- Each trial waits for Enter before it spins. Afterwards it prints the
+  requested and measured time, direction and speed, and asks for a note
+  (for example the angle turned). `--repeat N` runs N trials, and the script
+  prints a CSV log at the end.
+- Ctrl-C, SIGTERM and a dropped SSH session stop the wheels and exit.
+- `RedAction`'s turn is checked once per loop pass, so it can overshoot. Confirm
+  `SECONDS_PER_180` with a run of the real loop as well.
 
 ## Task Ownership
 

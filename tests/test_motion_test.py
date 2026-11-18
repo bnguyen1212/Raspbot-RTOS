@@ -156,49 +156,11 @@ def test_end_of_input_quits_cleanly():
 # Signal handlers
 # ---------------------------------------------------------------------------
 
-def installed_handler(monkeypatch, driver, output):
-    handlers: dict[int, object] = {}
-    monkeypatch.setattr(script.signal, "signal", lambda sig, h: handlers.__setitem__(sig, h))
-    script.install_stop_handlers(driver, write=output.append)
-    return handlers
+def test_uses_the_shared_stop_handlers():
+    # The handler itself is tested in test_stop_on_signal.py.
+    from motion import stop_on_signal
 
-
-def test_handlers_cover_sigint_sigterm_and_sighup_where_available(monkeypatch):
-    handlers = installed_handler(monkeypatch, script.DryRunDriver(write=lambda m: None), [])
-    expected = {signal.SIGINT, signal.SIGTERM}
-    if hasattr(signal, "SIGHUP"):
-        expected.add(signal.SIGHUP)
-    assert set(handlers) == expected
-
-
-def test_handler_stops_then_exits_without_raising(monkeypatch):
-    output: list[str] = []
-    driver = script.DryRunDriver(write=lambda m: None)
-    handlers = installed_handler(monkeypatch, driver, output)
-    exits: list[int] = []
-    monkeypatch.setattr(script.os, "_exit", exits.append)
-
-    handlers[signal.SIGTERM](signal.SIGTERM, None)
-    assert driver.calls == [("stop", ())]
-    assert exits == [128 + signal.SIGTERM]
-    assert "SIGTERM: stop sent" in output[-1]
-
-
-def test_handler_still_exits_if_stop_fails(monkeypatch):
-    output: list[str] = []
-    driver = script.DryRunDriver(write=lambda m: None)
-
-    def broken_stop() -> None:
-        raise OSError("I2C bus gone")
-
-    driver.stop = broken_stop  # type: ignore[method-assign]
-    handlers = installed_handler(monkeypatch, driver, output)
-    exits: list[int] = []
-    monkeypatch.setattr(script.os, "_exit", exits.append)
-
-    handlers[signal.SIGINT](signal.SIGINT, None)
-    assert exits == [128 + signal.SIGINT]
-    assert "FAILED" in output[-1] and "emergency_stop.py" in output[-1]
+    assert script.install_stop_handlers is stop_on_signal.install_stop_handlers
 
 
 @pytest.mark.skipif(not hasattr(signal, "SIGHUP"), reason="needs POSIX signals (runs on the Pi)")
