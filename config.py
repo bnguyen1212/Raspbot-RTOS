@@ -125,14 +125,14 @@ IDLE_SENTINEL: tuple[None, None] = (None, None)
 
 # A target counts as "centered" when |x - IMAGE_CENTER_X| <= this many pixels.
 # TODO: placeholder -- tune on the robot.
-CENTER_DEADBAND_PX = 40
+CENTER_DEADBAND_PX = 210
 
 # ---------------------------------------------------------------------------
 # Scheduler
 # ---------------------------------------------------------------------------
 # Safety cutoff: TimerCheck returns True once more than this many seconds have
 # passed, measured with time.monotonic(), and the main loop then stops.
-TIMEOUT_SECONDS = 20.0
+TIMEOUT_SECONDS = 30.0
 
 # ---------------------------------------------------------------------------
 # Motion
@@ -166,5 +166,5 @@ assert 0 < STRAFE_SPEED <= MAX_SPEED, "STRAFE_SPEED must be in (0, MAX_SPEED]"
 #
 # TODO: placeholders -- calibrate both on the robot, at ROTATE_SPEED, on the
 # actual floor surface. Recalibrate whenever ROTATE_SPEED changes.
-SECONDS_PER_360 = 2.17
-SECONDS_PER_180 = 1.1
+SECONDS_PER_360 = 1.85
+SECONDS_PER_180 = 0.8
