@@ -20,6 +20,10 @@ ENV/
 .coverage
 htmlcov/
 
+# tools/vision_debug.py output
+*_debug.png
+debug_out/
+
 # Editors / OS
 .vscode/
 .idea/
@@ -32,3 +36,4 @@ captures/
 *.mp4
 *.avi
 *.h264
+raspbot_lib_dump.txt

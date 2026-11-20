@@ -1,29 +1,63 @@
-"""Locate the dominant tracked color's position from pixel counts.
+"""Pick the winning tracked color and locate it in the frame.
 
-No hardware/camera calls belong in this module -- it consumes only the dict
-produced by vision.color_counter.ColorCounter, so it can be unit tested with
-hand-built dicts (no image or robot required).
+No hardware/camera calls belong in this module. It works only on the
+color_counts dict from ColorCounter and on the same frame ColorCounter saw, so
+it can be unit tested with static images (no robot required).
 """
 
-# Sentinel returned by ColorLocator when no tracked color is present in
-# sufficient quantity to act on. main.py treats this as "go idle".
-IDLE_POSITION = None
+from __future__ import annotations
+
+import numpy as np
+
+from config import COMMAND_COLORS, IDLE_SENTINEL, MIN_PIXEL_THRESHOLD, TRACKED_COLORS, Position
+from vision.hsv_mask import color_mask, mask_centroid, to_hsv
 
 
-def ColorLocator(color_counts):
-    """Determine the 2D position of the dominant tracked color.
+def ColorLocator(
+    color_counts: dict[str, int], image: np.ndarray
+) -> tuple[str, Position] | tuple[None, None]:
+    """Pick the winning color from the counts, then find where it is in `image`.
+
+    1. Winning color: max(TRACKED_COLORS, key=color_counts.__getitem__).
+       On a tie, the color listed first in TRACKED_COLORS wins.
+    2. If the winner's count is below MIN_PIXEL_THRESHOLD, return
+       IDLE_SENTINEL.
+    3. Otherwise, recompute ONLY the winning color's mask from `image`
+       (convert BGR to HSV, then OR together that color's
+       config.COMMAND_COLORS ranges), and return the centroid of that mask:
+       the average position of all matching pixels. Don't rebuild masks for
+       the other colors. The mask comes from the same helper ColorCounter
+       uses (vision.hsv_mask), so it matches what was counted.
 
     Args:
-        color_counts: dict[str, int], per-color pixel counts as produced by
-            vision.color_counter.ColorCounter (keys are color names, values
-            are pixel counts).
+        color_counts: dict[str, int], as returned by
+            vision.color_counter.ColorCounter (every key in
+            config.TRACKED_COLORS is present).
+        image: numpy.ndarray, the same BGR frame that was passed to
+            ColorCounter, shape (H, W, 3), dtype uint8.
 
     Returns:
-        tuple[float, float] | None: an (x, y) position vector describing where
-        the dominant color is in the frame (e.g. normalized offset from
-        center), or IDLE_POSITION (None) if no color meets the detection
-        threshold. Callers determine *which* color is dominant themselves
-        (e.g. via max(color_counts, key=color_counts.get)) since this
-        function only reports position, not identity.
+        tuple[str, Position] | tuple[None, None]:
+          - (winning_color, (x, y)): winning_color is one of TRACKED_COLORS,
+            and (x, y) is the centroid of its mask in pixel coordinates, with
+            the origin at the top-left, 0 <= x < W and 0 <= y < H.
+          - IDLE_SENTINEL, i.e. (None, None), if no color reaches
+            MIN_PIXEL_THRESHOLD. Also returned, defensively, if the counts
+            don't match `image` and the winner's mask turns out empty: the
+            robot then stays still instead of steering toward a made-up
+            position.
+
+    Raises:
+        KeyError: if a TRACKED_COLORS key is missing from color_counts.
+        TypeError / ValueError: if `image` isn't a non-empty (H, W, 3) uint8
+            numpy array (see vision.hsv_mask.to_hsv).
     """
-    raise NotImplementedError
+    winning_color = max(TRACKED_COLORS, key=color_counts.__getitem__)
+    if color_counts[winning_color] < MIN_PIXEL_THRESHOLD:
+        return IDLE_SENTINEL
+
+    mask = color_mask(to_hsv(image), COMMAND_COLORS[winning_color])
+    position = mask_centroid(mask)
+    if position is None:
+        return IDLE_SENTINEL
+    return winning_color, position

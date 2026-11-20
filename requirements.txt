@@ -1,3 +1,5 @@
+# Runtime dependencies only (what the robot needs to run main.py).
+# Test/dev tools go in requirements-dev.txt.
 opencv-python
 numpy
 
